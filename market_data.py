@@ -42,33 +42,50 @@ class MarketData:
             return {}
     
     async def get_best_bid_ask(self, market_id: Optional[int] = None) -> tuple[float, float]:
-        """Get best bid and ask prices"""
+        """
+        Get best bid and ask prices
+        
+        NOTE: Order books are currently empty on Lighter, so we estimate from recent trades
+        """
         try:
+            # Try orderbook first
             orderbook = await self.get_orderbook(market_id)
             
             # Parse orderbook structure from SDK
             bids = orderbook.get("bids", [])
             asks = orderbook.get("asks", [])
             
-            if not bids or not asks:
-                logger.warning("Empty orderbook")
-                return 0.0, 0.0
+            if bids and asks:
+                # Orderbook available
+                best_bid = float(bids[0][0]) if isinstance(bids[0], list) else float(bids[0].get("price", 0))
+                best_ask = float(asks[0][0]) if isinstance(asks[0], list) else float(asks[0].get("price", 0))
+                return best_bid, best_ask
             
-            # Bids and asks are typically [price, size] arrays
-            best_bid = float(bids[0][0]) if isinstance(bids[0], list) else float(bids[0].get("price", 0))
-            best_ask = float(asks[0][0]) if isinstance(asks[0], list) else float(asks[0].get("price", 0))
+            # Fallback: Use recent trades to estimate bid/ask
+            trades = await self.get_recent_trades(market_id, limit=10)
+            if trades:
+                # Get recent prices
+                recent_prices = [float(t.get('price', 0)) for t in trades if t.get('price')]
+                if recent_prices:
+                    mid_price = sum(recent_prices) / len(recent_prices)
+                    # Estimate spread as 0.02% (2 basis points)
+                    spread = mid_price * 0.0002
+                    return mid_price - spread/2, mid_price + spread/2
             
-            return best_bid, best_ask
+            logger.debug("No orderbook or trades available")
+            return 0.0, 0.0
+            
         except Exception as e:
             logger.error(f"Error getting best bid/ask: {e}")
             return 0.0, 0.0
     
     async def get_mid_price(self, market_id: Optional[int] = None) -> float:
-        """Get mid price from best bid/ask"""
+        """Get mid price - uses recent trades if order book is empty"""
         best_bid, best_ask = await self.get_best_bid_ask(market_id)
         if best_bid > 0 and best_ask > 0:
             return (best_bid + best_ask) / 2.0
-        logger.warning("Invalid bid/ask, returning 0")
+        
+        # If no bid/ask, return 0 (get_best_bid_ask already tried trades fallback)
         return 0.0
     
     async def get_current_price(self, market_id: Optional[int] = None) -> float:
