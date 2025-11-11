@@ -10,6 +10,10 @@ import sys
 from datetime import datetime
 from typing import Optional
 import psutil
+from dotenv import load_dotenv
+
+# Load environment variables FIRST
+load_dotenv()
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -234,7 +238,7 @@ Current Status: {"✅ RUNNING" if controller.is_running() else "❌ STOPPED"}
 
 Network: {settings.lighter_base_url.split('//')[1].split('.')[0].upper()}
 Market: {settings.trading_symbol}
-DRY_RUN: {settings.dry_run}
+DRY RUN: {settings.dry_run}
 """
     
     await update.message.reply_text(welcome_msg, reply_markup=reply_markup, parse_mode='Markdown')
