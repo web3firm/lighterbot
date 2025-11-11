@@ -426,7 +426,8 @@ class OrderFlowStrategy(BaseStrategy):
     async def analyze(self, market_data: Dict, position_info: Optional[Dict] = None) -> Optional[Signal]:
         """Analyze order flow for trading signals"""
         try:
-            current_price = market_data.get('current_price', 0)
+            # Access MarketData object attributes, not dict keys
+            current_price = market_data.price if hasattr(market_data, 'price') else 0
             if current_price == 0:
                 return None
             
@@ -483,7 +484,8 @@ class SentimentStrategy(BaseStrategy):
     async def analyze(self, market_data: Dict, position_info: Optional[Dict] = None) -> Optional[Signal]:
         """Analyze market sentiment for trading signals"""
         try:
-            current_price = market_data.get('current_price', 0)
+            # Access MarketData object attributes, not dict keys
+            current_price = market_data.price if hasattr(market_data, 'price') else 0
             if current_price == 0:
                 return None
             

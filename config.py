@@ -36,6 +36,21 @@ class Settings(BaseSettings):
     max_open_orders: int = Field(default=10, validation_alias="MAX_OPEN_ORDERS")
     position_check_interval: int = Field(default=60, validation_alias="POSITION_CHECK_INTERVAL")
     
+    # Percentage-based Position Sizing
+    position_size_percent: int = Field(default=20, validation_alias="POSITION_SIZE_PERCENT")
+    leverage: int = Field(default=3, validation_alias="LEVERAGE")
+    stop_loss_percent: float = Field(default=2.0, validation_alias="STOP_LOSS_PERCENT")
+    
+    # Enterprise Scaled Profit Taking
+    profit_taking_mode: str = Field(default="scaled", validation_alias="PROFIT_TAKING_MODE")
+    profit_level_1_percent: float = Field(default=2.0, validation_alias="PROFIT_LEVEL_1_PERCENT")
+    profit_level_1_size: int = Field(default=30, validation_alias="PROFIT_LEVEL_1_SIZE")
+    profit_level_2_percent: float = Field(default=4.0, validation_alias="PROFIT_LEVEL_2_PERCENT")
+    profit_level_2_size: int = Field(default=30, validation_alias="PROFIT_LEVEL_2_SIZE")
+    profit_runner_size: int = Field(default=40, validation_alias="PROFIT_RUNNER_SIZE")
+    trailing_stop_activation: float = Field(default=4.0, validation_alias="TRAILING_STOP_ACTIVATION")
+    trailing_stop_distance: float = Field(default=2.0, validation_alias="TRAILING_STOP_DISTANCE")
+    
     # Strategy Configuration
     enable_momentum_strategy: bool = Field(default=True, validation_alias="ENABLE_MOMENTUM_STRATEGY")
     enable_mean_reversion_strategy: bool = Field(default=True, validation_alias="ENABLE_MEAN_REVERSION_STRATEGY")

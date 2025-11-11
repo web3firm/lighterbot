@@ -1,94 +1,185 @@
-# 🚀 Advanced Lighter Trading Bot# Lighter Trading Bot
+# Lighter Trading Bot 🤖# 🚀 Advanced Lighter Trading Bot# Lighter Trading Bot
 
 
 
-Production-ready algorithmic trading bot with multiple advanced strategies, comprehensive risk management, and real-time monitoring.Automated trading bot for Lighter perpetual futures exchange using the official Python SDK.
+Professional trading bot for Lighter Protocol perpetual futures.
 
 
 
-## ✅ Completed Upgrades## Features
+## FeaturesProduction-ready algorithmic trading bot with multiple advanced strategies, comprehensive risk management, and real-time monitoring.Automated trading bot for Lighter perpetual futures exchange using the official Python SDK.
 
 
+
+- **Enterprise Scaled Exits**: 30% @ +2%, 30% @ +4%, 40% trails
+
+- **Percentage-Based Sizing**: Uses 20% of portfolio with leverage
+
+- **High Win Rate System**: Only trades 65%+ confidence setups## ✅ Completed Upgrades## Features
+
+- **Risk Management**: 2% stop loss, trailing stops, circuit breakers
+
+- **Multi-Timeframe Analysis**: 5m, 15m, 1h, 4h confirmations
+
+- **Official API Integration**: 100% Lighter SDK methods
 
 ### 1. Cleaned Up Codebase- ✅ Official Lighter Python SDK integration
 
+## Quick Start
+
 - ✅ Removed all debug/credential helper scripts- ✅ Async/await architecture for high performance
 
-- ✅ Streamlined configuration (no warnings)- ✅ Market data fetching (orderbook, trades, funding rates, candlesticks)
+```bash
+
+# Install dependencies- ✅ Streamlined configuration (no warnings)- ✅ Market data fetching (orderbook, trades, funding rates, candlesticks)
+
+pip install -r requirements.txt
 
 - ✅ Production-ready code only- ✅ Order management (limit, market, cancel)
 
-- ✅ Position tracking and management
+# Configure
+
+cp .env.example .env- ✅ Position tracking and management
+
+nano .env  # Add your private keys
 
 ### 2. Advanced Trading Strategies- ✅ Risk management (leverage limits, stop loss, take profit)
 
-- ✅ **Momentum Strategy**: RSI + MACD + EMA trend following- ✅ Comprehensive logging
+# Run
+
+python main.py- ✅ **Momentum Strategy**: RSI + MACD + EMA trend following- ✅ Comprehensive logging
+
+```
 
 - ✅ **Mean Reversion**: Bollinger Bands + RSI overbought/oversold- ✅ Alert system integration
 
+## Settings (.env)
+
 - ✅ **Market Making**: Dynamic spreads based on volatility (optional)
 
-- ✅ **Grid Trading**: Profit from ranging markets (optional)## Installation
+```bash
+
+# API Keys (REQUIRED)- ✅ **Grid Trading**: Profit from ranging markets (optional)## Installation
+
+LIGHTER_API_KEY_PRIVATE_KEY=your_key_here
+
+LIGHTER_ACCOUNT_INDEX=0
 
 
 
-### 3. Professional Risk Management```bash
+# Trading### 3. Professional Risk Management```bash
 
-- ✅ **Kelly Criterion Position Sizing**: Optimal bet sizing based on win rate# Clone or navigate to project directory
+TRADING_SYMBOL=ZEC-PERP
 
-- ✅ **Auto Stop-Loss**: Closes positions at -2% loss automaticallycd /root/lighterbot
+TRADING_MARKET_ID=90- ✅ **Kelly Criterion Position Sizing**: Optimal bet sizing based on win rate# Clone or navigate to project directory
 
-- ✅ **Auto Take-Profit**: Closes positions at +4% profit automatically  
+
+
+# Position Sizing- ✅ **Auto Stop-Loss**: Closes positions at -2% loss automaticallycd /root/lighterbot
+
+POSITION_SIZE_PERCENT=20  # Use 20% of portfolio
+
+LEVERAGE=3                 # 3x leverage- ✅ **Auto Take-Profit**: Closes positions at +4% profit automatically  
+
+STOP_LOSS_PERCENT=2.0     # -2% stop loss
 
 - ✅ **Portfolio Heat Monitoring**: Tracks total exposure vs capital# Create virtual environment
 
-- ✅ **Drawdown Protection**: Halts trading if daily loss limit exceededpython3 -m venv venv
+# Scaled Profit Taking
 
-- ✅ **Dynamic Position Sizing**: Adjusts size based on risk and account balancesource venv/bin/activate
+PROFIT_LEVEL_1_PERCENT=2.0    # Exit 30% at +2%- ✅ **Drawdown Protection**: Halts trading if daily loss limit exceededpython3 -m venv venv
+
+PROFIT_LEVEL_1_SIZE=30
+
+PROFIT_LEVEL_2_PERCENT=4.0    # Exit 30% at +4%- ✅ **Dynamic Position Sizing**: Adjusts size based on risk and account balancesource venv/bin/activate
+
+PROFIT_LEVEL_2_SIZE=30
+
+PROFIT_RUNNER_SIZE=40         # 40% trails
+
+TRAILING_STOP_DISTANCE=2.0    # Trail 2% below peak
+
+```### 4. Technical Analysis Suite# Install dependencies
 
 
 
-### 4. Technical Analysis Suite# Install dependencies
+## How It Works- ✅ RSI, MACD, EMA/SMA, Bollinger Bandspip install -r requirements.txt
 
-- ✅ RSI, MACD, EMA/SMA, Bollinger Bandspip install -r requirements.txt
 
-- ✅ ATR, Stochastic Oscillator, OBV```
 
-- ✅ Real-time indicator calculations
+1. **Analyzes** market every 30s (regime, volume, funding, order book)- ✅ ATR, Stochastic Oscillator, OBV```
 
-## Configuration
+2. **Waits** for 65%+ confidence setup (high probability)
 
-## 🎯 Quick Start
+3. **Enters** with percentage-based position sizing- ✅ Real-time indicator calculations
+
+4. **Exits** in 3 stages:
+
+   - 30% at +2% (quick profit lock)## Configuration
+
+   - 30% at +4% (more profit lock)
+
+   - 40% trails to capture big moves## 🎯 Quick Start
+
+5. **Protects** with -2% stop loss on entire position
 
 1. Copy `.env.example` to `.env`:
 
+## Commands
+
 ### Run the Bot```bash
 
-```bashcp .env.example .env
+```bash
+
+# Start bot```bashcp .env.example .env
+
+python main.py
 
 cd /root/lighterbot```
 
-./venv/bin/python main.py
+# Start in background
 
-```2. Edit `.env` with your credentials:
-
-
-
-### Current Configuration```bash
-
-- **Network**: Mainnet (⚠️ REAL MONEY)# Lighter API Configuration
-
-- **Account**: 366730LIGHTER_BASE_URL=https://testnet.zklighter.elliot.ai  # or https://mainnet.zklighter.elliot.ai
-
-- **Symbol**: BTC-PERPLIGHTER_API_KEY_PRIVATE_KEY=your_private_key_here
-
-- **Balance**: ~$59 collateral, ~$28 availableLIGHTER_ACCOUNT_INDEX=your_account_index
-
-- **Current Position**: 15,510 PENGU (-$0.54 PnL)LIGHTER_API_KEY_INDEX=253  # Default API key index
+nohup python main.py > bot.log 2>&1 &./venv/bin/python main.py
 
 
 
-## ⚙️ Strategy Configuration# Trading Configuration
+# Check logs```2. Edit `.env` with your credentials:
+
+tail -f bot.log
+
+
+
+# Stop bot
+
+pkill -f "python main.py"### Current Configuration```bash
+
+
+
+# Check status- **Network**: Mainnet (⚠️ REAL MONEY)# Lighter API Configuration
+
+ps aux | grep "python main.py"
+
+```- **Account**: 366730LIGHTER_BASE_URL=https://testnet.zklighter.elliot.ai  # or https://mainnet.zklighter.elliot.ai
+
+
+
+## Performance Tracking- **Symbol**: BTC-PERPLIGHTER_API_KEY_PRIVATE_KEY=your_private_key_here
+
+
+
+- **Logs**: `bot.log` - Real-time activity- **Balance**: ~$59 collateral, ~$28 availableLIGHTER_ACCOUNT_INDEX=your_account_index
+
+- **Trades**: `trade_history.json` - All trade details
+
+- **Metrics**: `http://localhost:9090/metrics` - Prometheus metrics- **Current Position**: 15,510 PENGU (-$0.54 PnL)LIGHTER_API_KEY_INDEX=253  # Default API key index
+
+
+
+## Support
+
+
+
+Check `SETTINGS.md` for configuration options or `TROUBLESHOOTING.md` for common issues.## ⚙️ Strategy Configuration# Trading Configuration
+
 
 TRADING_MARKET_ID=0  # 0 for BTC-PERP
 

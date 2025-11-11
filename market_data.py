@@ -45,12 +45,14 @@ class MarketData:
         """
         Get best bid and ask prices
         
-        NOTE: SDK returns prices as strings with dots (e.g., "50000.00")
-        Order books may be empty on testnet, so we fallback to recent trades
+        NOTE: SDK returns last_trade_price as float directly from get_order_book_details
+        Orderbooks (bids/asks arrays) may be empty, so we use last_trade_price as fallback
         """
         try:
-            # Try orderbook first
-            orderbook = await self.get_orderbook(market_id)
+            m_id = market_id if market_id is not None else self.market_id
+            
+            # Get order book details which includes last_trade_price
+            orderbook = await self.get_orderbook(m_id)
             
             # Parse orderbook structure from SDK
             bids = orderbook.get("bids", [])
@@ -59,21 +61,33 @@ class MarketData:
             if bids and asks:
                 # SDK returns price as string with decimal point
                 # Example: {"price": "50000.00", "remaining_base_amount": "100.000000"}
-                best_bid = float(bids[0].get("price", "0").replace(".", "")) / 100  # price has 2 decimals
-                best_ask = float(asks[0].get("price", "0").replace(".", "")) / 100  # price has 2 decimals
+                # No need to parse - just convert to float directly
+                best_bid = float(bids[0].get("price", "0"))
+                best_ask = float(asks[0].get("price", "0"))
                 return best_bid, best_ask
             
-            # Fallback: Use recent trades to estimate bid/ask
-            trades = await self.get_recent_trades(market_id, limit=10)
+            # Fallback: Use last_trade_price from orderbook details
+            last_price = orderbook.get("last_trade_price", 0)
+            if last_price and float(last_price) > 0:
+                last_price = float(last_price)
+                # Estimate spread as 0.02% (2 basis points)
+                spread = last_price * 0.0002
+                return last_price - spread/2, last_price + spread/2
+            
+            # Last fallback: Use recent trades to estimate bid/ask
+            trades = await self.get_recent_trades(m_id, limit=10)
             if trades:
-                # SDK returns price as string, parse correctly
+                # SDK returns price as float or string in trades
                 recent_prices = []
                 for t in trades:
-                    price_str = t.get('price', '0')
-                    if price_str and price_str != '0':
-                        # Remove dots and convert: "50000.00" -> 5000000 / 100 = 50000.0
-                        price_val = float(price_str.replace(".", "")) / 100
-                        recent_prices.append(price_val)
+                    price = t.get('price', 0)
+                    if price:
+                        try:
+                            price_float = float(price)
+                            if price_float > 0:
+                                recent_prices.append(price_float)
+                        except (ValueError, TypeError):
+                            continue
                 
                 if recent_prices:
                     mid_price = sum(recent_prices) / len(recent_prices)

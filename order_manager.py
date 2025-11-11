@@ -131,6 +131,20 @@ class OrderManager:
         try:
             client = await get_client()
             m_id = market_id if market_id is not None else self.market_id
+            
+            # SAFETY CHECK: Verify market is active before placing order
+            if not market_metadata.is_market_active(m_id):
+                market_info = market_metadata.get_market(m_id)
+                status = market_info.get("status", "unknown")
+                logger.error(f"Cannot place order on inactive market {m_id} (status: {status})")
+                return None
+            
+            # SAFETY CHECK: Verify size meets minimum requirements
+            min_size = market_metadata.get_min_order_size(m_id)
+            if size < min_size:
+                logger.error(f"Order size {size} below minimum {min_size} for market {m_id}")
+                return None
+            
             client_order_idx = await self._get_next_client_order_index()
             
             # Convert using market metadata (no more hardcoded decimals!)
@@ -202,6 +216,20 @@ class OrderManager:
         try:
             client = await get_client()
             m_id = market_id if market_id is not None else self.market_id
+            
+            # SAFETY CHECK: Verify market is active before placing order
+            if not market_metadata.is_market_active(m_id):
+                market_info = market_metadata.get_market(m_id)
+                status = market_info.get("status", "unknown")
+                logger.error(f"Cannot place order on inactive market {m_id} (status: {status})")
+                return None
+            
+            # SAFETY CHECK: Verify size meets minimum requirements
+            min_size = market_metadata.get_min_order_size(m_id)
+            if size < min_size:
+                logger.error(f"Order size {size} below minimum {min_size} for market {m_id}")
+                return None
+            
             client_order_idx = await self._get_next_client_order_index()
             
             # Get current market price to calculate worst acceptable price

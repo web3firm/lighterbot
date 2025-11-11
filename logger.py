@@ -210,23 +210,47 @@ class AlertManager:
         return time_since_last >= self.alert_cooldown
     
     def _send_webhook(self, message: str, level: str = "INFO"):
-        """Send alert via webhook"""
+        """Send alert via webhook (Telegram Bot API)"""
         if not self.webhook_url:
             return
         
         try:
+            # Extract bot token and chat ID from settings or webhook URL
+            from config import settings
+            bot_token = getattr(settings, 'telegram_bot_token', None)
+            chat_id = getattr(settings, 'telegram_chat_id', None)
+            
+            if not bot_token or not chat_id:
+                self.logger.debug("Telegram credentials not configured, skipping alert")
+                return
+            
+            # Format message with emoji based on level
+            level_emojis = {
+                "INFO": "ℹ️",
+                "WARNING": "⚠️",
+                "ERROR": "❌",
+                "CRITICAL": "🚨"
+            }
+            emoji = level_emojis.get(level, "ℹ️")
+            
+            formatted_message = f"{emoji} *{level}*\n\n{message}\n\n🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+            # Send via Telegram Bot API
+            telegram_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
             payload = {
-                "text": f"[{level}] Lighter Bot: {message}",
-                "timestamp": datetime.now().isoformat(),
-                "level": level
+                "chat_id": chat_id,
+                "text": formatted_message,
+                "parse_mode": "Markdown",
+                "disable_web_page_preview": True
             }
             
             response = requests.post(
-                self.webhook_url,
+                telegram_url,
                 json=payload,
                 timeout=10
             )
             response.raise_for_status()
+            
         except Exception as e:
             self.logger.error(f"Failed to send webhook alert: {e}")
     

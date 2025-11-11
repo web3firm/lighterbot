@@ -111,41 +111,91 @@ class AdvancedRiskManager:
         self,
         account_balance: float,
         entry_price: float,
-        stop_loss_price: float,
-        risk_per_trade: float = 0.01  # Risk 1% per trade
+        stop_loss_price: float = None,  # Now optional
+        risk_per_trade: float = 0.02,  # Legacy parameter, not used in new method
+        market_id: Optional[int] = None
     ) -> float:
         """
-        Calculate optimal position size based on risk
+        Calculate position size as percentage of account balance with leverage
+        
+        New method: position_size = (account_balance × position_percent × leverage) / entry_price
         
         Args:
-            account_balance: Total account balance
-            entry_price: Entry price
-            stop_loss_price: Stop loss price
-            risk_per_trade: Maximum risk per trade as fraction
+            account_balance: Total account balance in USD
+            entry_price: Entry price per coin
+            stop_loss_price: Stop loss price (not used in percentage-based sizing)
+            risk_per_trade: Legacy parameter (not used)
+            market_id: Market ID (to get min size from API)
             
         Returns:
-            Position size
+            Position size in base currency (coins)
         """
-        if entry_price == stop_loss_price:
-            return 0.0
+        from config import settings
+        from utils import market_metadata
         
-        # Calculate risk per unit
-        risk_per_unit = abs(entry_price - stop_loss_price)
+        # Get percentage-based settings
+        position_percent = settings.position_size_percent / 100.0  # e.g., 0.20 for 20%
+        leverage = settings.leverage  # e.g., 3x
         
-        # Maximum dollar risk
-        max_risk_dollars = account_balance * risk_per_trade
+        # Calculate position size in USD
+        position_value_usd = account_balance * position_percent * leverage
         
-        # Position size
-        position_size = max_risk_dollars / risk_per_unit
+        # Convert to coins
+        position_size_coins = position_value_usd / entry_price
         
-        # Apply Kelly Criterion adjustment
-        kelly_size = self.calculate_kelly_size()
-        kelly_adjusted_size = position_size * kelly_size
+        # Get minimum order size from API metadata
+        if market_id:
+            min_size = market_metadata.get_min_order_size(market_id)
+        else:
+            min_size = 0.001  # Fallback
         
-        # Cap at max position size
-        final_size = min(kelly_adjusted_size, self.limits.max_position_size)
+        # Ensure minimum viable size
+        if position_size_coins < min_size:
+            position_size_coins = min_size
+            self.logger.warning(
+                f"Calculated position {position_size_coins:.6f} below minimum {min_size:.6f}, "
+                f"using minimum instead"
+            )
+        
+        # Cap at max position size (safety check)
+        final_size = min(position_size_coins, self.limits.max_position_size)
+        
+        self.logger.info(
+            f"Position sizing: ${account_balance:.2f} × {settings.position_size_percent}% × {leverage}x "
+            f"= ${position_value_usd:.2f} = {final_size:.6f} coins @ ${entry_price:.2f}"
+        )
         
         return final_size
+    
+    def calculate_trading_cost(
+        self, 
+        size: float, 
+        price: float, 
+        market_id: int,
+        is_maker: bool = False
+    ) -> float:
+        """
+        Calculate trading cost including fees from API metadata
+        
+        Args:
+            size: Position size
+            price: Entry price
+            market_id: Market ID
+            is_maker: True if maker order, False if taker
+            
+        Returns:
+            Trading cost in quote currency
+        """
+        from utils import market_metadata
+        
+        position_value = size * price
+        fees = market_metadata.get_fees(market_id)
+        fee_rate = fees["maker"] if is_maker else fees["taker"]
+        
+        # Convert fee percentage to decimal (API returns as percentage)
+        fee_cost = position_value * (fee_rate / 100.0)
+        
+        return fee_cost
     
     async def check_order_risk(
         self,
@@ -164,14 +214,26 @@ class AdvancedRiskManager:
         try:
             # Get account info
             account_info = await self.order_manager.get_account_info()
-            account_balance = float(account_info.get('collateral', 0))
+            
+            # Parse account balance from nested structure
+            account_balance = 0.0
+            if isinstance(account_info, dict):
+                if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                    acc_data = account_info['accounts'][0]
+                    account_balance = float(acc_data.get('collateral', 0))
+                elif 'collateral' in account_info:
+                    account_balance = float(account_info.get('collateral', 0))
+            
+            if account_balance == 0:
+                return False, "Account balance is zero", 0.0
             
             # Calculate risk-adjusted position size
             if stop_loss:
                 optimal_size = self.calculate_position_size(
-                    account_balance,
-                    price,
-                    stop_loss
+                    account_balance=account_balance,
+                    entry_price=price,
+                    stop_loss_price=stop_loss,
+                    market_id=market_id
                 )
                 
                 if size > optimal_size * 1.5:  # Allow 50% buffer
@@ -214,7 +276,15 @@ class AdvancedRiskManager:
         try:
             positions = await self.order_manager.get_positions()
             account_info = await self.order_manager.get_account_info()
-            account_balance = float(account_info.get('collateral', 0))
+            
+            # Parse account balance from nested structure
+            account_balance = 0.0
+            if isinstance(account_info, dict):
+                if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                    acc_data = account_info['accounts'][0]
+                    account_balance = float(acc_data.get('collateral', 0))
+                elif 'collateral' in account_info:
+                    account_balance = float(account_info.get('collateral', 0))
             
             if account_balance == 0:
                 return 0.0
@@ -330,8 +400,16 @@ class AdvancedRiskManager:
             positions = await self.order_manager.get_positions()
             account_info = await self.order_manager.get_account_info()
             
+            # Parse account balance from nested structure
+            current_balance = 0.0
+            if isinstance(account_info, dict):
+                if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                    acc_data = account_info['accounts'][0]
+                    current_balance = float(acc_data.get('collateral', 0))
+                elif 'collateral' in account_info:
+                    current_balance = float(account_info.get('collateral', 0))
+            
             # Update daily tracking
-            current_balance = float(account_info.get('collateral', 0))
             if self.daily_start_balance is None:
                 self.daily_start_balance = current_balance
                 self.daily_high_balance = current_balance
@@ -340,8 +418,9 @@ class AdvancedRiskManager:
             if current_balance > self.daily_high_balance:
                 self.daily_high_balance = current_balance
             
-            daily_drawdown = (self.daily_high_balance - current_balance) / self.daily_high_balance
-            self.max_drawdown_today = max(self.max_drawdown_today, daily_drawdown)
+            if self.daily_high_balance > 0:
+                daily_drawdown = (self.daily_high_balance - current_balance) / self.daily_high_balance
+                self.max_drawdown_today = max(self.max_drawdown_today, daily_drawdown)
             
             for position in positions:
                 # Auto stop-loss/take-profit

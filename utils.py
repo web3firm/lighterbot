@@ -31,16 +31,22 @@ T = TypeVar("T")
 
 
 class MarketMetadata:
-    """Holds market decimal metadata and provides conversion helpers.
+    """Thread-safe market metadata storage.
 
-    Stored per market_id:
+    Stores comprehensive market data from official Lighter API including:
         base_decimals: decimals for base asset sizing (lots multiplier)
-        quote_decimals: decimals for quote asset (not heavily used yet)
+        quote_decimals: decimals for quote asset (USDC = 6)
         price_decimals: decimals for price integer conversion
+        min_base_amount: minimum order size in base units
+        min_quote_amount: minimum order value in quote units
+        maker_fee: maker fee percentage
+        taker_fee: taker fee percentage  
+        liquidation_fee: liquidation fee percentage
+        status: market status (active/inactive)
     """
 
     def __init__(self) -> None:
-        self._markets: Dict[int, Dict[str, int]] = {}
+        self._markets: Dict[int, Dict[str, Any]] = {}
         self._symbol_to_id: Dict[str, int] = {}
         self._lock = asyncio.Lock()
 
@@ -51,6 +57,12 @@ class MarketMetadata:
         base_decimals: int,
         quote_decimals: int,
         price_decimals: int,
+        min_base_amount: Optional[float] = None,
+        min_quote_amount: Optional[float] = None,
+        maker_fee: Optional[float] = None,
+        taker_fee: Optional[float] = None,
+        liquidation_fee: Optional[float] = None,
+        status: Optional[str] = None,
     ) -> None:
         async with self._lock:
             self._markets[market_id] = {
@@ -58,17 +70,49 @@ class MarketMetadata:
                 "quote_decimals": quote_decimals,
                 "price_decimals": price_decimals,
                 "symbol": symbol,
+                "min_base_amount": min_base_amount,
+                "min_quote_amount": min_quote_amount,
+                "maker_fee": maker_fee,
+                "taker_fee": taker_fee,
+                "liquidation_fee": liquidation_fee,
+                "status": status,
             }
             self._symbol_to_id[symbol] = market_id
             logger.debug(
                 f"Registered market {symbol} id={market_id} base={base_decimals} price={price_decimals}"
             )
+            if min_base_amount:
+                logger.debug(f"  Min amounts: base={min_base_amount}, quote={min_quote_amount}")
+            if maker_fee is not None:
+                logger.debug(f"  Fees: maker={maker_fee}%, taker={taker_fee}%, liquidation={liquidation_fee}%")
+            if status:
+                logger.debug(f"  Status: {status}")
 
     def get_market(self, market_id: int) -> Dict[str, Any]:
         return self._markets.get(market_id, {})
 
     def get_market_id(self, symbol: str) -> Optional[int]:
         return self._symbol_to_id.get(symbol)
+    
+    def get_min_order_size(self, market_id: int) -> float:
+        """Get minimum order size from API data, fallback to 0.001"""
+        market = self._markets.get(market_id, {})
+        return market.get("min_base_amount", 0.001)
+    
+    def get_fees(self, market_id: int) -> Dict[str, float]:
+        """Get fee structure for market"""
+        market = self._markets.get(market_id, {})
+        return {
+            "maker": market.get("maker_fee", 0.0),
+            "taker": market.get("taker_fee", 0.0),
+            "liquidation": market.get("liquidation_fee", 1.0)
+        }
+    
+    def is_market_active(self, market_id: int) -> bool:
+        """Check if market is active for trading"""
+        market = self._markets.get(market_id, {})
+        status = market.get("status", "unknown")
+        return status and status.lower() == "active"
 
     def to_base_amount(self, size: float, market_id: int) -> int:
         info = self.get_market(market_id)
@@ -174,32 +218,122 @@ def retry_async(
     return decorator
 
 
-async def resolve_market_metadata(client: Any, symbol: str) -> Optional[int]:
-    """Register known market metadata for a symbol. Returns market_id or None."""
+async def resolve_market_metadata(client: Any, symbol: str = None, market_id: int = None) -> Optional[int]:
+    """
+    Fetch and register market metadata from Lighter API.
+    
+    Args:
+        client: Lighter client instance
+        symbol: Market symbol (e.g., "BTC-PERP", "ETH", "BTC")
+        market_id: Market ID to query directly
+        
+    Returns:
+        Market ID if successful, None otherwise
+    """
     try:
-        logger.info(f"Resolving market metadata for {symbol}...")
-        known_markets = {
-            "BTC-PERP": {"id": 1, "base_decimals": 6, "price_decimals": 2},
-            "ETH-PERP": {"id": 2, "base_decimals": 6, "price_decimals": 2},
-            "NEAR-PERP": {"id": 3, "base_decimals": 6, "price_decimals": 2},
-        }
-        if symbol in known_markets:
-            info = known_markets[symbol]
+        logger.info(f"Fetching market metadata from Lighter API...")
+        
+        # Get all markets from official API
+        import lighter
+        config = lighter.Configuration(host=settings.lighter_base_url)
+        async with lighter.ApiClient(configuration=config) as api_client:
+            order_api = lighter.OrderApi(api_client)
+            result = await order_api.order_books()
+            
+            if not hasattr(result, 'order_books'):
+                logger.error("Failed to fetch order books from API")
+                return None
+            
+            # Find the market by ID or symbol
+            target_market = None
+            
+            # Clean symbol for matching (remove -PERP suffix if present)
+            clean_symbol = symbol.replace('-PERP', '').upper() if symbol else None
+            
+            for market in result.order_books:
+                # Match by market ID first (most reliable)
+                if market_id and market.market_id == market_id:
+                    target_market = market
+                    logger.info(f"Found market by ID: {market.symbol} (ID: {market.market_id})")
+                    break
+                    
+                # Match by symbol (clean both for comparison)
+                if clean_symbol and market.symbol.upper() == clean_symbol:
+                    target_market = market
+                    logger.info(f"Found market by symbol: {market.symbol} (ID: {market.market_id})")
+                    break
+            
+            if not target_market:
+                logger.error(f"Market not found - Symbol: {symbol}, ID: {market_id}")
+                logger.info(f"Available markets: {', '.join([m.symbol for m in result.order_books[:10]])}...")
+                return None
+            
+            # Extract metadata from API response
+            detected_symbol = target_market.symbol
+            detected_market_id = target_market.market_id
+            
+            # API provides complete market metadata:
+            # - supported_size_decimals: base asset decimals
+            # - supported_price_decimals: price decimals
+            # - supported_quote_decimals: quote asset (USDC) decimals
+            # - min_base_amount: minimum order size in base units
+            # - min_quote_amount: minimum order value in quote units
+            # - maker_fee, taker_fee, liquidation_fee: fee percentages
+            # - status: market status (active/inactive)
+            base_decimals = target_market.supported_size_decimals
+            price_decimals = target_market.supported_price_decimals
+            quote_decimals = target_market.supported_quote_decimals
+            min_base = float(target_market.min_base_amount) if hasattr(target_market, 'min_base_amount') else None
+            min_quote = float(target_market.min_quote_amount) if hasattr(target_market, 'min_quote_amount') else None
+            maker_fee = float(target_market.maker_fee) if hasattr(target_market, 'maker_fee') else None
+            taker_fee = float(target_market.taker_fee) if hasattr(target_market, 'taker_fee') else None
+            liquidation_fee = float(target_market.liquidation_fee) if hasattr(target_market, 'liquidation_fee') else None
+            market_status = target_market.status if hasattr(target_market, 'status') else None
+            
+            # Register in our metadata cache with COMPLETE data
             await market_metadata.set_market(
-                market_id=info["id"],
-                symbol=symbol,
-                base_decimals=info["base_decimals"],
-                quote_decimals=6,
-                price_decimals=info["price_decimals"],
+                market_id=detected_market_id,
+                symbol=f"{detected_symbol}-PERP",  # Add -PERP suffix for consistency
+                base_decimals=base_decimals,
+                quote_decimals=quote_decimals,
+                price_decimals=price_decimals,
+                min_base_amount=min_base,
+                min_quote_amount=min_quote,
+                maker_fee=maker_fee,
+                taker_fee=taker_fee,
+                liquidation_fee=liquidation_fee,
+                status=market_status,
+            )
+            
+            logger.info(
+                f"✓ Registered {detected_symbol}-PERP (Market ID: {detected_market_id}) from API"
             )
             logger.info(
-                f"Registered {symbol} id={info['id']} base={info['base_decimals']} price={info['price_decimals']}"
+                f"  Base decimals: {base_decimals}, Price decimals: {price_decimals}, "
+                f"Quote decimals: {quote_decimals}"
             )
-            return info["id"]
-        logger.error(f"Unknown market symbol: {symbol}")
-        return None
+            
+            if min_base:
+                logger.info(
+                    f"  Min base amount: {min_base}, "
+                    f"Min quote amount: {min_quote}"
+                )
+            
+            if maker_fee is not None:
+                logger.info(
+                    f"  Fees - Maker: {maker_fee}%, Taker: {taker_fee}%, "
+                    f"Liquidation: {liquidation_fee}%"
+                )
+            
+            if market_status:
+                status_emoji = "✅" if market_status.lower() == "active" else "⚠️"
+                logger.info(f"  {status_emoji} Market Status: {market_status}")
+            
+            return detected_market_id
+            
     except Exception as e:
-        logger.error(f"Error resolving market metadata: {e}", exc_info=True)
+        logger.error(f"Error fetching market metadata from API: {e}", exc_info=True)
+        logger.warning("Will not use fallback hardcoded values - API should be the source of truth")
         return None
 
 

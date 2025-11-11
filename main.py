@@ -19,6 +19,12 @@ from strategies import (
 from logger import get_logger, get_alert_manager
 from lighter_client import close_client, get_client
 from utils import resolve_market_metadata, market_metadata
+from trailing_stops import trailing_stop_manager
+from indicators import TechnicalIndicators
+from metrics import bot_metrics
+from win_rate_optimizer import win_rate_optimizer, TradeQuality
+from win_rate_tracker import win_rate_tracker
+from profit_manager import profit_manager
 
 
 class AdvancedTradingBot:
@@ -43,6 +49,14 @@ class AdvancedTradingBot:
         self.market_data = MarketData()
         self.order_manager = OrderManager()
         self.risk_manager = AdvancedRiskManager(self.order_manager, self.market_data)
+        
+        # Start Prometheus metrics server
+        bot_metrics.start_server()
+        bot_metrics.set_bot_info({
+            "version": "2.0",
+            "market": settings.trading_symbol,
+            "environment": settings.environment
+        })
         
         # Initialize strategy manager
         self.strategy_manager = StrategyManager()
@@ -111,6 +125,19 @@ class AdvancedTradingBot:
             self.low_history.append(best_bid)
             self.volume_history.append(0)  # Volume would come from exchange
             
+            # Feed data to ML predictor
+            try:
+                from ml_predictor import ml_predictor
+                ml_predictor.add_candle(
+                    open_price=mid_price,
+                    high=best_ask,
+                    low=best_bid,
+                    close=mid_price,
+                    volume=1.0  # Placeholder
+                )
+            except Exception as e:
+                self.logger.debug(f"ML predictor update failed: {e}")
+            
             # Keep only recent history
             if len(self.price_history) > self.max_history_len:
                 self.price_history = self.price_history[-self.max_history_len:]
@@ -135,8 +162,8 @@ class AdvancedTradingBot:
             # Determine order parameters
             size = settings.min_order_size * signal.strength  # Scale size by signal strength
             
-            # Calculate stop-loss price (2% away)
-            stop_loss_pct = 0.02
+            # Calculate stop-loss price using settings
+            stop_loss_pct = settings.stop_loss_percent / 100.0  # Convert percentage to decimal
             if signal.signal_type == SignalType.BUY:
                 stop_loss_price = signal.price * (1 - stop_loss_pct)
             else:
@@ -169,6 +196,14 @@ class AdvancedTradingBot:
             
             if order:
                 self.trade_count += 1
+                
+                # Record metrics
+                bot_metrics.record_trade(
+                    side=side,
+                    strategy=signal.reason.split(':')[0] if ':' in signal.reason else "unknown",
+                    market=settings.trading_symbol
+                )
+                
                 self.alert_manager.send_alert(
                     f"Order executed: {side.upper()} {adjusted_size:.4f} @ ${signal.price:.2f}",
                     "INFO"
@@ -182,57 +217,161 @@ class AdvancedTradingBot:
             return False
     
     async def run_strategies(self):
-        """Run all trading strategies and execute signals"""
+        """
+        Run HIGH WIN RATE strategy analysis (Target: 80%+)
+        
+        Uses win_rate_optimizer with:
+        - Multi-timeframe confirmation (5m, 15m, 1h, 4h) via SDK candlesticks()
+        - Market regime detection
+        - Volume analysis via SDK recent_trades()
+        - Funding rate analysis via SDK fundings()
+        - Order book imbalance via SDK order_book_details()
+        - Risk/Reward filtering (minimum 2:1)
+        
+        Only trades EXCELLENT quality setups (80%+ confidence)
+        """
         try:
-            # Check if we have enough price history
-            if len(self.price_history) < 30:
-                self.logger.debug("Not enough price history for strategy analysis")
+            # Check if we already have a position - don't pyramid
+            position = await self.order_manager.get_position(settings.trading_market_id)
+            
+            if position and position.is_open:
+                self.logger.info(f"Position already open ({position.symbol}), waiting for exit...")
                 return
             
-            # Create market data snapshot for strategies
-            current_price = self.price_history[-1]
-            bid, ask = await self.market_data.get_best_bid_ask()
+            # Get current price
+            current_price = self.price_history[-1] if len(self.price_history) > 0 else 0
+            if current_price == 0:
+                self.logger.debug("No price data available")
+                return
             
-            market_snapshot = StrategyMarketData(
-                symbol=settings.trading_symbol,
-                price=current_price,
-                bid=bid,
-                ask=ask,
-                spread=ask - bid,
-                volume_24h=0.0,  # Would fetch from exchange
-                price_history=self.price_history.copy(),
-                high_history=self.high_history.copy(),
-                low_history=self.low_history.copy(),
-                volume_history=self.volume_history.copy(),
-                timestamp=datetime.now()
+            # Use win rate optimizer to find EXCELLENT setup
+            self.logger.info("="*60)
+            self.logger.info("🎯 Analyzing market for HIGH PROBABILITY setup...")
+            self.logger.info(f"Current price: ${current_price:.2f}")
+            
+            trade_setup = await win_rate_optimizer.get_best_trade_setup(
+                market_id=settings.trading_market_id,
+                current_price=current_price
             )
             
-            # Analyze market with all strategies
-            signals = await self.strategy_manager.analyze_market(market_snapshot)
-            
-            if not signals:
-                self.logger.debug("No trading signals generated")
+            if not trade_setup:
+                self.logger.info("❌ No EXCELLENT quality setup found. Waiting for better opportunity...")
+                self.logger.info("="*60)
                 return
             
-            # Get consensus signal
-            consensus = self.strategy_manager.get_consensus_signal(signals)
+            # Found EXCELLENT setup!
+            self.logger.info("")
+            self.logger.info("✅ EXCELLENT SETUP FOUND!")
+            self.logger.info(f"Direction: {trade_setup.direction.upper()}")
+            self.logger.info(f"Quality: {trade_setup.quality.value}")
+            self.logger.info(f"Confidence: {trade_setup.confidence:.1%} (expected win rate)")
+            self.logger.info(f"Entry: ${trade_setup.entry_price:.2f}")
+            self.logger.info(f"Stop Loss: ${trade_setup.stop_loss:.2f}")
+            self.logger.info(f"Take Profit: ${trade_setup.take_profit:.2f}")
+            self.logger.info(f"Risk/Reward: {trade_setup.risk_reward_ratio:.2f}:1")
+            self.logger.info("")
+            self.logger.info("Reasons:")
+            for reason in trade_setup.reasons:
+                self.logger.info(f"  ✓ {reason}")
             
-            if consensus:
-                self.logger.info(f"Consensus signal: {consensus.signal_type.value} (strength={consensus.strength:.2f})")
-                self.logger.info(f"Reason: {consensus.reason}")
+            if trade_setup.warnings:
+                self.logger.info("Warnings:")
+                for warning in trade_setup.warnings:
+                    self.logger.info(f"  ⚠ {warning}")
+            
+            self.logger.info("="*60)
+            
+            # Execute the trade
+            side = "buy" if trade_setup.direction == "long" else "sell"
+            
+            # Get current account balance
+            try:
+                account_info = await self.order_manager.get_account_info()
+                if isinstance(account_info, dict):
+                    if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                        account_balance = float(account_info['accounts'][0].get('collateral', 0))
+                    else:
+                        account_balance = float(account_info.get('collateral', 0))
+                else:
+                    self.logger.error("Could not get account balance for position sizing")
+                    return
+            except Exception as e:
+                self.logger.error(f"Error fetching account balance: {e}")
+                return
+            
+            # Calculate position size using risk manager (percentage-based)
+            risk_amount = await self.risk_manager.calculate_position_size(
+                account_balance=account_balance,
+                entry_price=trade_setup.entry_price,
+                stop_loss_price=trade_setup.stop_loss,
+                market_id=settings.trading_market_id
+            )
+            
+            if risk_amount <= 0:
+                self.logger.warning("Risk manager rejected trade (position size too small)")
+                return
+            
+            # Place market order
+            success = await self.order_manager.place_market_order(
+                side=side,
+                size=risk_amount,
+                market_id=settings.trading_market_id
+            )
+            
+            if success:
+                self.trade_count += 1
+                trade_id = f"{settings.trading_market_id}_{settings.trading_symbol}_{int(datetime.now().timestamp())}"
                 
-                # Check if we already have a position
-                position = await self.order_manager.get_position(settings.trading_market_id)
+                # Create enterprise-grade scaled exit plan
+                exit_plan = profit_manager.create_exit_plan(
+                    trade_id=trade_id,
+                    direction=trade_setup.direction,
+                    entry_price=trade_setup.entry_price,
+                    total_size=risk_amount,
+                    stop_loss_price=trade_setup.stop_loss
+                )
                 
-                if position and position.is_open:
-                    # Don't open conflicting positions
-                    if (position.is_long and consensus.signal_type == SignalType.SELL) or \
-                       (not position.is_long and consensus.signal_type == SignalType.BUY):
-                        self.logger.info("Conflicting signal with open position, skipping")
-                        return
+                self.logger.info("")
+                self.logger.info("📊 ENTERPRISE SCALED EXIT PLAN:")
+                self.logger.info(f"   🎯 Level 1: Exit {settings.profit_level_1_size}% at +{settings.profit_level_1_percent}%")
+                self.logger.info(f"   🎯 Level 2: Exit {settings.profit_level_2_size}% at +{settings.profit_level_2_percent}%")
+                self.logger.info(f"   🚀 Runner: {settings.profit_runner_size}% trails after +{settings.trailing_stop_activation}%")
+                self.logger.info("")
                 
-                # Execute the consensus signal
-                await self.execute_signal(consensus)
+                # Record trade opening in tracker
+                win_rate_tracker.open_trade(
+                    trade_id=trade_id,
+                    market_id=settings.trading_market_id,
+                    symbol=settings.trading_symbol,
+                    direction=trade_setup.direction,
+                    entry_price=trade_setup.entry_price,
+                    size=risk_amount,
+                    stop_loss=trade_setup.stop_loss,
+                    take_profit=exit_plan.profit_levels[-1].trigger_price if exit_plan.profit_levels else trade_setup.entry_price * 1.05,
+                    confidence=trade_setup.confidence,
+                    reasons=trade_setup.reasons,
+                    warnings=trade_setup.warnings
+                )
+                
+                self.logger.info(f"🎯 HIGH CONFIDENCE trade executed: {side.upper()} {risk_amount} @ ${current_price:.2f}")
+                
+                # Send alert
+                self.alert_manager.send_alert(
+                    f"🎯 EXCELLENT Setup: {side.upper()} {settings.trading_symbol}\n"
+                    f"Confidence: {trade_setup.confidence:.1%}\n"
+                    f"Entry: ${trade_setup.entry_price:.2f}\n"
+                    f"Scaled Exits: {settings.profit_level_1_size}% @ +{settings.profit_level_1_percent}%, "
+                    f"{settings.profit_level_2_size}% @ +{settings.profit_level_2_percent}%, "
+                    f"{settings.profit_runner_size}% trails",
+                    "INFO"
+                )
+                
+                # Record to metrics
+                bot_metrics.record_trade(
+                    side=side,
+                    strategy="WinRateOptimizer",
+                    market=str(settings.trading_market_id)
+                )
             
             self.last_strategy_run = datetime.now()
         
@@ -240,9 +379,107 @@ class AdvancedTradingBot:
             self.logger.error(f"Error running strategies: {e}", exc_info=True)
     
     async def check_risk_and_positions(self):
-        """Periodic risk check and automated position management"""
+        """Periodic risk check and automated position management WITH trailing stops and scaled exits"""
         try:
-            # Monitor positions with auto stop-loss/take-profit
+            # Get current positions
+            positions = await self.order_manager.get_positions()
+            current_price = self.price_history[-1] if len(self.price_history) > 0 else 0
+            
+            # Check scaled profit levels for all active plans
+            for trade_id, plan in list(profit_manager.active_plans.items()):
+                # Update trailing stop for runner
+                new_trailing_stop = profit_manager.update_trailing_stop(trade_id, current_price)
+                
+                # Check if any profit levels triggered
+                triggered_levels = profit_manager.check_profit_levels(trade_id, current_price)
+                
+                for level in triggered_levels:
+                    self.logger.info(f"💰 Profit Level {level.level_num} triggered for {trade_id}!")
+                    self.logger.info(f"   Selling {level.size:.6f} @ ${current_price:.2f}")
+                    
+                    # Execute partial exit
+                    side = "sell" if plan.direction == "long" else "buy"
+                    success = await self.order_manager.place_market_order(
+                        side=side,
+                        size=level.size,
+                        market_id=settings.trading_market_id
+                    )
+                    
+                    if success:
+                        profit_manager.mark_level_filled(trade_id, level.level_num, current_price)
+                        
+                        profit_usd = level.size * abs(current_price - plan.entry_price)
+                        self.logger.info(f"✅ Locked in ${profit_usd:.2f} profit!")
+                        
+                        # Alert
+                        self.alert_manager.send_alert(
+                            f"💰 Level {level.level_num} Exit: {level.size:.6f} @ ${current_price:.2f}\n"
+                            f"Profit: +${profit_usd:.2f} (+{level.trigger_percent:.1f}%)\n"
+                            f"Remaining: {plan.remaining_size:.6f}",
+                            "INFO"
+                        )
+            
+            # Update trailing stops and check for hits
+            for pos in positions:
+                if hasattr(pos, 'is_open') and pos.is_open:
+                    position_id = f"{pos.market_id}_{pos.symbol}"
+                    
+                    # Create stop if doesn't exist
+                    if not trailing_stop_manager.get_stop(position_id):
+                        # Calculate ATR
+                        if len(self.price_history) >= 14:
+                            atr = TechnicalIndicators.atr(
+                                self.high_history,
+                                self.low_history,
+                                self.price_history,
+                                period=14
+                            )
+                            
+                            trailing_stop_manager.create_stop(
+                                position_id=position_id,
+                                market_id=pos.market_id,
+                                is_long=pos.is_long,
+                                entry_price=pos.entry_price,
+                                atr=atr
+                            )
+                            self.logger.info(f"Created trailing stop for {position_id}")
+                    
+                    # Update stop with current price
+                    stop_price, should_close, reason = trailing_stop_manager.update_stop(
+                        position_id=position_id,
+                        current_price=pos.current_price
+                    )
+                    
+                    # Close position if stop hit
+                    if should_close:
+                        self.logger.warning(f"Trailing stop hit for {position_id}: {reason}")
+                        
+                        side = "sell" if pos.is_long else "buy"
+                        await self.order_manager.place_market_order(
+                            side=side,
+                            size=abs(pos.size),
+                            market_id=pos.market_id
+                        )
+                        
+                        # Record trade close in tracker
+                        # Find matching open trade
+                        open_trades = win_rate_tracker.get_open_trades()
+                        for trade in open_trades:
+                            if trade.market_id == pos.market_id and trade.symbol == pos.symbol:
+                                win_rate_tracker.close_trade(
+                                    trade_id=trade.id,
+                                    exit_price=pos.current_price,
+                                    exit_reason="trailing_stop"
+                                )
+                                break
+                        
+                        trailing_stop_manager.remove_stop(position_id)
+                        self.alert_manager.send_alert(
+                            f"🛑 Trailing stop closed {position_id}: {reason}",
+                            "INFO"
+                        )
+            
+            # Monitor positions with auto stop-loss/take-profit (existing logic)
             risk_report = await self.risk_manager.monitor_positions()
             
             # Log alerts
@@ -278,8 +515,18 @@ class AdvancedTradingBot:
         # Account info
         try:
             account_info = await self.order_manager.get_account_info()
-            collateral = float(account_info.get('collateral', 0))
-            available = float(account_info.get('available_balance', 0))
+            
+            # Parse nested account structure
+            collateral = 0.0
+            available = 0.0
+            if isinstance(account_info, dict):
+                if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                    acc_data = account_info['accounts'][0]
+                    collateral = float(acc_data.get('collateral', 0))
+                    available = float(acc_data.get('available_balance', 0))
+                else:
+                    collateral = float(account_info.get('collateral', 0))
+                    available = float(account_info.get('available_balance', 0))
             
             print(f"\n💰 Account:")
             print(f"   Total Collateral: ${collateral:.2f}")
@@ -325,7 +572,22 @@ class AdvancedTradingBot:
         print(f"\n📈 Performance:")
         print(f"   Uptime: {uptime.total_seconds() / 3600:.1f} hours")
         print(f"   Trades Executed: {self.trade_count}")
-        print(f"   Active Strategies: {len([s for s in self.strategy_manager.strategies if s.enabled])}")
+        print(f"   Active Strategies: WIN RATE OPTIMIZER (80%+ target)")
+        
+        # Win Rate Statistics (from tracker)
+        try:
+            stats = win_rate_tracker.get_statistics()
+            if stats["total_trades"] > 0:
+                win_rate = stats["win_rate"]
+                if win_rate >= 80:
+                    print(f"\n🎯 WIN RATE: {win_rate:.1f}% ✅ (TARGET ACHIEVED!)")
+                else:
+                    print(f"\n📊 WIN RATE: {win_rate:.1f}% (Target: 80%)")
+                print(f"   Closed Trades: {stats['total_trades']} (W: {stats['winners']}, L: {stats['losers']})")
+                print(f"   Total PnL: {'🟢' if stats['total_pnl'] > 0 else '🔴'} ${stats['total_pnl']:.2f}")
+                print(f"   Profit Factor: {stats['profit_factor']:.2f}")
+        except Exception as e:
+            print(f"   Error fetching win rate stats: {e}")
         
         # Market data
         try:
@@ -353,27 +615,38 @@ class AdvancedTradingBot:
         self.logger.info("Starting Advanced Trading Bot...")
         
         # CRITICAL: Resolve market metadata at startup
-        self.logger.info(f"Resolving market metadata for {settings.trading_symbol}...")
+        self.logger.info(f"Resolving market metadata for {settings.trading_symbol} (Market ID: {settings.trading_market_id})...")
         client = await get_client()
-        market_id = await resolve_market_metadata(client, settings.trading_symbol)
+        
+        # Try to resolve using both symbol and market_id
+        market_id = await resolve_market_metadata(
+            client, 
+            symbol=settings.trading_symbol,
+            market_id=settings.trading_market_id
+        )
         
         if market_id is None:
-            self.logger.error(f"Failed to resolve market ID for {settings.trading_symbol}")
+            self.logger.error(f"Failed to resolve market metadata")
             self.logger.error("Bot cannot start without valid market metadata")
             return
         
-        # Update settings with resolved market_id
+        # Update settings with resolved market_id (in case it was corrected)
         if market_id != settings.trading_market_id:
-            self.logger.warning(f"Config has market_id={settings.trading_market_id}, but resolved to {market_id}")
-            self.logger.info(f"Using resolved market_id={market_id}")
+            self.logger.warning(f"Config has market_id={settings.trading_market_id}, resolved to {market_id}")
             settings.trading_market_id = market_id
         
         # Display market info
         market_info = market_metadata.get_market(market_id)
         if market_info:
-            self.logger.info(f"✓ Market: {market_info['symbol']} (ID: {market_id})")
+            detected_symbol = market_info.get('symbol', settings.trading_symbol)
+            self.logger.info(f"✓ Market: {detected_symbol} (ID: {market_id})")
             self.logger.info(f"  Base decimals: {market_info['base_decimals']}")
             self.logger.info(f"  Price decimals: {market_info['price_decimals']}")
+            
+            # Update symbol if it was auto-detected
+            if detected_symbol != settings.trading_symbol:
+                self.logger.info(f"  Auto-detected symbol: {detected_symbol}")
+                settings.trading_symbol = detected_symbol
         
         # Check for dry run mode
         if settings.dry_run:
@@ -397,17 +670,35 @@ class AdvancedTradingBot:
         self.logger.info("Bot started successfully")
         self.alert_manager.send_alert("Advanced Trading Bot started", "INFO")
         
-        # Initial status display
-        await self.display_status()
+        # Initial status display - commented out temporarily to debug
+        # self.logger.info("Calling display_status()...")
+        # await self.display_status()
+        # self.logger.info("Display status completed, entering main loop...")
+        self.logger.info("Entering main trading loop...")
         
         # Main trading loop
         iteration = 0
+        start_time = datetime.now()
+        
         while self.running:
             try:
                 iteration += 1
                 
+                # Update uptime metric
+                uptime = (datetime.now() - start_time).total_seconds()
+                bot_metrics.set_uptime(uptime)
+                
                 # Update market data history
                 await self.update_market_data_history()
+                
+                # Update market metrics
+                if len(self.price_history) > 0:
+                    current_price = self.price_history[-1]
+                    bot_metrics.set_market_price(
+                        market=str(settings.trading_market_id),
+                        symbol=settings.trading_symbol,
+                        price=current_price
+                    )
                 
                 # Run trading strategies every 60 seconds
                 if (datetime.now() - self.last_strategy_run).seconds >= 60:
@@ -416,6 +707,18 @@ class AdvancedTradingBot:
                 # Risk check and position monitoring every 5 minutes
                 if (datetime.now() - self.last_risk_check).seconds >= 300:
                     await self.check_risk_and_positions()
+                
+                # Update account balance metric
+                try:
+                    account_info = await self.order_manager.get_account_info()
+                    if isinstance(account_info, dict):
+                        if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                            balance = float(account_info['accounts'][0].get('collateral', 0))
+                        else:
+                            balance = float(account_info.get('collateral', 0))
+                        bot_metrics.set_account_balance(balance)
+                except Exception as e:
+                    self.logger.debug(f"Error updating balance metric: {e}")
                 
                 # Display status every 30 iterations (~15 minutes if 30s sleep)
                 if iteration % 30 == 0:
@@ -429,6 +732,7 @@ class AdvancedTradingBot:
                 break
             except Exception as e:
                 self.logger.error(f"Error in main loop: {e}", exc_info=True)
+                bot_metrics.record_error(error_type=type(e).__name__, component="main_loop")
                 self.alert_manager.alert_error(str(e))
                 await asyncio.sleep(60)  # Wait longer on error
         

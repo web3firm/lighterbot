@@ -138,12 +138,26 @@ class LighterClient:
     @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_candlesticks(self, market_id: int, resolution: str = "1h", limit: int = 100) -> List[Dict]:
-        """Get candlestick data"""
+        """
+        Get candlestick data
+        
+        Args:
+            market_id: Market ID
+            resolution: Timeframe (1m, 5m, 15m, 1h, 4h, 1d)
+            limit: Number of candles (count_back)
+        """
         try:
+            import time
+            # SDK requires start_timestamp, end_timestamp, and count_back
+            end_timestamp = int(time.time())  # Current time
+            start_timestamp = end_timestamp - (limit * self._get_resolution_seconds(resolution))
+            
             result = await self.candlestick_api.candlesticks(
                 market_id=market_id,
                 resolution=resolution,
-                limit=limit
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                count_back=limit
             )
             if hasattr(result, 'candlesticks'):
                 return [c.to_dict() if hasattr(c, 'to_dict') else c for c in result.candlesticks]
@@ -152,12 +166,47 @@ class LighterClient:
             logger.error(f"Error getting candlesticks: {e}")
             raise  # Let retry_async handle this
     
+    def _get_resolution_seconds(self, resolution: str) -> int:
+        """
+        Convert resolution string to seconds
+        
+        Note: This is a utility helper map for time conversions.
+        The resolution values themselves (1m, 5m, etc.) are defined by the API specification.
+        """
+        resolution_map = {
+            "1m": 60,
+            "5m": 300,
+            "15m": 900,
+            "1h": 3600,
+            "4h": 14400,
+            "1d": 86400,
+        }
+        return resolution_map.get(resolution, 3600)
+    
     @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
-    async def get_funding_rates(self, market_id: Optional[int] = None) -> List[Dict]:
-        """Get funding rates"""
+    async def get_funding_rates(self, market_id: Optional[int] = None, limit: int = 10) -> List[Dict]:
+        """
+        Get funding rates
+        
+        Args:
+            market_id: Market ID (default from settings)
+            limit: Number of funding rate records
+        """
         try:
-            result = await self.candlestick_api.fundings(market_id=market_id or 255, limit=10)
+            import time
+            # SDK requires resolution, start_timestamp, end_timestamp, and count_back
+            # API only supports "1h" or "1d" for funding rates
+            end_timestamp = int(time.time())
+            start_timestamp = end_timestamp - (limit * 3600)  # 1h periods
+            
+            result = await self.candlestick_api.fundings(
+                market_id=market_id or settings.trading_market_id,
+                resolution="1h",  # API only supports 1h or 1d
+                start_timestamp=start_timestamp,
+                end_timestamp=end_timestamp,
+                count_back=limit
+            )
             if hasattr(result, 'fundings'):
                 return [f.to_dict() if hasattr(f, 'to_dict') else f for f in result.fundings]
             return []
