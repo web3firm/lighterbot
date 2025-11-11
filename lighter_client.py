@@ -5,6 +5,8 @@ import lighter
 import asyncio
 from typing import Dict, Any, Optional, List
 from config import settings
+from logger import logger
+from utils import retry_async, resolve_market_metadata
 import eth_account
 
 
@@ -50,11 +52,11 @@ class LighterClient:
                 if resp and getattr(resp, 'sub_accounts', None):
                     # pick the first sub-account index
                     settings.lighter_account_index = resp.sub_accounts[0].index
-                    print(f"Discovered account_index={settings.lighter_account_index} for address {eth_address}")
+                    logger.info(f"Discovered account_index={settings.lighter_account_index} for address {eth_address}")
                 else:
-                    print(f"No sub-accounts found for {eth_address}")
+                    logger.warning(f"No sub-accounts found for {eth_address}")
             except Exception as e:
-                print(f"Warning: failed to discover account index via ETH key: {e}")
+                logger.warning(f" failed to discover account index via ETH key: {e}")
 
         # Initialize signer client (SignerClient may perform internal checks)
         try:
@@ -98,24 +100,27 @@ class LighterClient:
         await self.api_client.close()
     
     # Market Data Methods
+    @retry_async(max_attempts=settings.api_retry_limit)
     async def get_order_books(self, market_id: Optional[int] = None) -> Dict[str, Any]:
         """Get order books"""
         try:
             result = await self.order_api.order_books(market_id=market_id or 255)
             return result.to_dict() if hasattr(result, 'to_dict') else result
         except Exception as e:
-            print(f"Error getting order books: {e}")
-            return {}
+            logger.error(f"Error getting order books: {e}")
+            raise  # Let retry_async handle this
     
+    @retry_async(max_attempts=settings.api_retry_limit)
     async def get_order_book_details(self, market_id: int) -> Dict[str, Any]:
         """Get order book details for specific market"""
         try:
             result = await self.order_api.order_book_details(market_id=market_id)
             return result.to_dict() if hasattr(result, 'to_dict') else result
         except Exception as e:
-            print(f"Error getting order book details: {e}")
-            return {}
+            logger.error(f"Error getting order book details: {e}")
+            raise  # Let retry_async handle this
     
+    @retry_async(max_attempts=settings.api_retry_limit)
     async def get_recent_trades(self, market_id: int, limit: int = 100) -> List[Dict]:
         """Get recent trades"""
         try:
@@ -124,9 +129,10 @@ class LighterClient:
                 return [t.to_dict() if hasattr(t, 'to_dict') else t for t in result.trades]
             return []
         except Exception as e:
-            print(f"Error getting recent trades: {e}")
-            return []
+            logger.error(f"Error getting recent trades: {e}")
+            raise  # Let retry_async handle this
     
+    @retry_async(max_attempts=settings.api_retry_limit)
     async def get_candlesticks(self, market_id: int, resolution: str = "1h", limit: int = 100) -> List[Dict]:
         """Get candlestick data"""
         try:
@@ -139,9 +145,10 @@ class LighterClient:
                 return [c.to_dict() if hasattr(c, 'to_dict') else c for c in result.candlesticks]
             return []
         except Exception as e:
-            print(f"Error getting candlesticks: {e}")
-            return []
+            logger.error(f"Error getting candlesticks: {e}")
+            raise  # Let retry_async handle this
     
+    @retry_async(max_attempts=settings.api_retry_limit)
     async def get_funding_rates(self, market_id: Optional[int] = None) -> List[Dict]:
         """Get funding rates"""
         try:
@@ -150,10 +157,11 @@ class LighterClient:
                 return [f.to_dict() if hasattr(f, 'to_dict') else f for f in result.fundings]
             return []
         except Exception as e:
-            print(f"Error getting funding rates: {e}")
-            return []
+            logger.error(f"Error getting funding rates: {e}")
+            raise  # Let retry_async handle this
     
     # Account Methods
+    @retry_async(max_attempts=settings.api_retry_limit)
     async def get_account_info(self, account_index: Optional[int] = None) -> Dict[str, Any]:
         """Get account information"""
         try:
@@ -161,8 +169,8 @@ class LighterClient:
             result = await self.account_api.account(by="index", value=str(acc_idx))
             return result.to_dict() if hasattr(result, 'to_dict') else result
         except Exception as e:
-            print(f"Error getting account info: {e}")
-            return {}
+            logger.error(f"Error getting account info: {e}")
+            raise  # Let retry_async handle this
     
     async def get_balances(self, account_index: Optional[int] = None) -> Dict[str, Any]:
         """Get account balances"""
@@ -177,17 +185,18 @@ class LighterClient:
                 return account_info['positions']
             return []
         except Exception as e:
-            print(f"Error getting positions: {e}")
+            logger.error(f"Error getting positions: {e}")
             return []
     
     # Order Methods
+    @retry_async(max_attempts=settings.api_retry_limit)
     async def get_active_orders(self, market_id: int, account_index: Optional[int] = None) -> List[Dict]:
         """Get active orders"""
         try:
             acc_idx = account_index or settings.lighter_account_index
             auth_token, err = self.signer_client.create_auth_token_with_expiry()
             if err:
-                print(f"Error creating auth token: {err}")
+                logger.error(f"Error creating auth token: {err}")
                 return []
             
             result = await self.order_api.account_active_orders(
@@ -200,8 +209,8 @@ class LighterClient:
                 return [o.to_dict() if hasattr(o, 'to_dict') else o for o in result.orders]
             return []
         except Exception as e:
-            print(f"Error getting active orders: {e}")
-            return []
+            logger.error(f"Error getting active orders: {e}")
+            raise  # Let retry_async handle this
     
     async def create_limit_order(
         self,
@@ -226,7 +235,7 @@ class LighterClient:
                 trigger_price=0
             )
         except Exception as e:
-            print(f"Error creating limit order: {e}")
+            logger.error(f"Error creating limit order: {e}")
             return None, None, str(e)
     
     async def create_market_order(
@@ -249,7 +258,7 @@ class LighterClient:
                 reduce_only=reduce_only
             )
         except Exception as e:
-            print(f"Error creating market order: {e}")
+            logger.error(f"Error creating market order: {e}")
             return None, None, str(e)
     
     async def cancel_order(self, market_index: int, order_index: int) -> tuple[Any, Any, Optional[str]]:
@@ -260,7 +269,7 @@ class LighterClient:
                 order_index=order_index
             )
         except Exception as e:
-            print(f"Error cancelling order: {e}")
+            logger.error(f"Error cancelling order: {e}")
             return None, None, str(e)
     
     async def cancel_all_orders(self) -> tuple[Any, Any, Optional[str]]:
@@ -271,7 +280,7 @@ class LighterClient:
                 time=0
             )
         except Exception as e:
-            print(f"Error cancelling all orders: {e}")
+            logger.error(f"Error cancelling all orders: {e}")
             return None, None, str(e)
 
 

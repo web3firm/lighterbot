@@ -17,7 +17,8 @@ from strategies import (
     Signal, SignalType
 )
 from logger import get_logger, get_alert_manager
-from lighter_client import close_client
+from lighter_client import close_client, get_client
+from utils import resolve_market_metadata, market_metadata
 
 
 class AdvancedTradingBot:
@@ -350,6 +351,42 @@ class AdvancedTradingBot:
     async def start(self):
         """Start the advanced trading bot"""
         self.logger.info("Starting Advanced Trading Bot...")
+        
+        # CRITICAL: Resolve market metadata at startup
+        self.logger.info(f"Resolving market metadata for {settings.trading_symbol}...")
+        client = await get_client()
+        market_id = await resolve_market_metadata(client, settings.trading_symbol)
+        
+        if market_id is None:
+            self.logger.error(f"Failed to resolve market ID for {settings.trading_symbol}")
+            self.logger.error("Bot cannot start without valid market metadata")
+            return
+        
+        # Update settings with resolved market_id
+        if market_id != settings.trading_market_id:
+            self.logger.warning(f"Config has market_id={settings.trading_market_id}, but resolved to {market_id}")
+            self.logger.info(f"Using resolved market_id={market_id}")
+            settings.trading_market_id = market_id
+        
+        # Display market info
+        market_info = market_metadata.get_market(market_id)
+        if market_info:
+            self.logger.info(f"✓ Market: {market_info['symbol']} (ID: {market_id})")
+            self.logger.info(f"  Base decimals: {market_info['base_decimals']}")
+            self.logger.info(f"  Price decimals: {market_info['price_decimals']}")
+        
+        # Check for dry run mode
+        if settings.dry_run:
+            self.logger.warning("=" * 60)
+            self.logger.warning("🔵 DRY RUN MODE - NO REAL TRADES WILL BE EXECUTED")
+            self.logger.warning("=" * 60)
+        
+        # Check for testnet
+        if settings.use_testnet:
+            self.logger.warning("Using TESTNET")
+        else:
+            self.logger.warning("⚠️  Trading on MAINNET with REAL funds!")
+        
         self.logger.info(f"Trading {settings.trading_symbol} on market ID {settings.trading_market_id}")
         
         # Setup signal handlers

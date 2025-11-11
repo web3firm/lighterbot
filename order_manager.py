@@ -8,6 +8,7 @@ from datetime import datetime
 from lighter_client import get_client
 from config import settings
 from logger import logger
+from utils import market_metadata, order_indexer, retry_async
 
 
 @dataclass
@@ -100,14 +101,13 @@ class OrderManager:
     def __init__(self):
         self._open_orders: Dict[int, Order] = {}
         self._positions: Dict[int, Position] = {}
-        self._next_client_order_index = 1
         self.market_id = settings.trading_market_id
+        # Removed: self._client_order_index_counter - now using global order_indexer
+        self._order_semaphore = asyncio.Semaphore(settings.max_open_orders)
     
-    def _get_next_client_order_index(self) -> int:
-        """Get next client order index"""
-        idx = self._next_client_order_index
-        self._next_client_order_index += 1
-        return idx
+    async def _get_next_client_order_index(self) -> int:
+        """Get next client order index using persistent indexer"""
+        return await order_indexer.get_next()
     
     async def place_limit_order(
         self,
@@ -130,23 +130,29 @@ class OrderManager:
         try:
             client = await get_client()
             m_id = market_id if market_id is not None else self.market_id
-            client_order_idx = self._get_next_client_order_index()
+            client_order_idx = await self._get_next_client_order_index()
             
-            # Convert to smallest units (SDK expects integers)
-            # Assuming 6 decimals for size and 2 for price (adjust as needed)
-            base_amount = int(size * 1_000_000)
-            price_int = int(price * 100)
+            # Convert using market metadata (no more hardcoded decimals!)
+            base_amount = market_metadata.to_base_amount(size, m_id)
+            price_int = market_metadata.to_price_int(price, m_id)
+            
+            # Check dry run mode
+            if settings.dry_run:
+                logger.info(f"[DRY RUN] Would place limit order: {side} {size} @ {price}")
+                return None
             
             is_ask = (side.lower() == "sell")
             
-            result, tx_hash, error = await client.create_limit_order(
-                market_index=m_id,
-                client_order_index=client_order_idx,
-                base_amount=base_amount,
-                price=price_int,
-                is_ask=is_ask,
-                reduce_only=reduce_only
-            )
+            # Use semaphore to limit concurrent orders
+            async with self._order_semaphore:
+                result, tx_hash, error = await client.create_limit_order(
+                    market_index=m_id,
+                    client_order_index=client_order_idx,
+                    base_amount=base_amount,
+                    price=price_int,
+                    is_ask=is_ask,
+                    reduce_only=reduce_only
+                )
             
             if error:
                 logger.error(f"Error placing limit order: {error}")
@@ -195,7 +201,7 @@ class OrderManager:
         try:
             client = await get_client()
             m_id = market_id if market_id is not None else self.market_id
-            client_order_idx = self._get_next_client_order_index()
+            client_order_idx = await self._get_next_client_order_index()
             
             # Get current market price to calculate worst acceptable price
             from market_data import MarketData
@@ -212,19 +218,27 @@ class OrderManager:
             else:
                 worst_price = current_price * (1 - max_slippage_pct / 100)
             
-            # Convert to smallest units
-            base_amount = int(size * 1_000_000)
-            avg_execution_price = int(worst_price * 100)
+            # Convert using market metadata (no more hardcoded decimals!)
+            base_amount = market_metadata.to_base_amount(size, m_id)
+            avg_execution_price = market_metadata.to_price_int(worst_price, m_id)
+            
+            # Check dry run mode
+            if settings.dry_run:
+                logger.info(f"[DRY RUN] Would place market order: {side} {size} @ ~{current_price}")
+                return None
+            
             is_ask = (side.lower() == "sell")
             
-            result, tx_hash, error = await client.create_market_order(
-                market_index=m_id,
-                client_order_index=client_order_idx,
-                base_amount=base_amount,
-                avg_execution_price=avg_execution_price,
-                is_ask=is_ask,
-                reduce_only=reduce_only
-            )
+            # Use semaphore to limit concurrent orders
+            async with self._order_semaphore:
+                result, tx_hash, error = await client.create_market_order(
+                    market_index=m_id,
+                    client_order_index=client_order_idx,
+                    base_amount=base_amount,
+                    avg_execution_price=avg_execution_price,
+                    is_ask=is_ask,
+                    reduce_only=reduce_only
+                )
             
             if error:
                 logger.error(f"Error placing market order: {error}")

@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     enable_orderflow_strategy: bool = Field(default=True, env="ENABLE_ORDERFLOW_STRATEGY")
     enable_sentiment_strategy: bool = Field(default=True, env="ENABLE_SENTIMENT_STRATEGY")
     
+    # API & Network Configuration
+    api_retry_limit: int = Field(default=3, env="API_RETRY_LIMIT")
+    api_timeout: int = Field(default=30, env="API_TIMEOUT")
+    api_initial_delay: float = Field(default=1.0, env="API_INITIAL_DELAY")
+    api_max_delay: float = Field(default=30.0, env="API_MAX_DELAY")
+    
+    # Safety Configuration
+    dry_run: bool = Field(default=False, env="DRY_RUN")
+    use_testnet: bool = Field(default=False, env="USE_TESTNET")
+    
     # Logging
     log_level: str = Field(default="INFO", env="LOG_LEVEL")
     log_file: str = Field(default="logs/bot.log", env="LOG_FILE")
