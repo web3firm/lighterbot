@@ -45,7 +45,8 @@ class MarketData:
         """
         Get best bid and ask prices
         
-        NOTE: Order books are currently empty on Lighter, so we estimate from recent trades
+        NOTE: SDK returns prices as strings with dots (e.g., "50000.00")
+        Order books may be empty on testnet, so we fallback to recent trades
         """
         try:
             # Try orderbook first
@@ -56,16 +57,24 @@ class MarketData:
             asks = orderbook.get("asks", [])
             
             if bids and asks:
-                # Orderbook available
-                best_bid = float(bids[0][0]) if isinstance(bids[0], list) else float(bids[0].get("price", 0))
-                best_ask = float(asks[0][0]) if isinstance(asks[0], list) else float(asks[0].get("price", 0))
+                # SDK returns price as string with decimal point
+                # Example: {"price": "50000.00", "remaining_base_amount": "100.000000"}
+                best_bid = float(bids[0].get("price", "0").replace(".", "")) / 100  # price has 2 decimals
+                best_ask = float(asks[0].get("price", "0").replace(".", "")) / 100  # price has 2 decimals
                 return best_bid, best_ask
             
             # Fallback: Use recent trades to estimate bid/ask
             trades = await self.get_recent_trades(market_id, limit=10)
             if trades:
-                # Get recent prices
-                recent_prices = [float(t.get('price', 0)) for t in trades if t.get('price')]
+                # SDK returns price as string, parse correctly
+                recent_prices = []
+                for t in trades:
+                    price_str = t.get('price', '0')
+                    if price_str and price_str != '0':
+                        # Remove dots and convert: "50000.00" -> 5000000 / 100 = 50000.0
+                        price_val = float(price_str.replace(".", "")) / 100
+                        recent_prices.append(price_val)
+                
                 if recent_prices:
                     mid_price = sum(recent_prices) / len(recent_prices)
                     # Estimate spread as 0.02% (2 basis points)

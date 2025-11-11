@@ -2,10 +2,12 @@
 Simple test script for Lighter API
 """
 import asyncio
+import pytest
 from lighter_client import get_client, close_client
 from config import settings
 
 
+@pytest.mark.asyncio
 async def test():
     print(f"\n=== Testing Lighter API ===")
     print(f"URL: {settings.lighter_base_url}")

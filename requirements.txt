@@ -1,4 +1,21 @@
+# Core Dependencies
 git+https://github.com/elliottech/lighter-python.git
 python-dotenv>=1.0.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
+eth-account>=0.10.0
+
+# Networking
+requests>=2.31.0
+aiohttp>=3.9.0
+
+# Data Analysis (for indicators)
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Testing (dev only)
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# Linting (dev only)
+ruff>=0.1.0

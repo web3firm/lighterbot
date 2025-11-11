@@ -9,6 +9,7 @@ from lighter_client import get_client
 from config import settings
 from logger import logger
 from utils import market_metadata, order_indexer, retry_async
+from utils import lighter_api_breaker, circuit_breaker
 
 
 @dataclass
@@ -309,6 +310,57 @@ class OrderManager:
             
         except Exception as e:
             logger.error(f"Error cancelling all orders: {e}")
+            return False
+
+    async def place_oco(
+        self,
+        side: str,
+        size: float,
+        tp_price: float,
+        sl_price: float,
+        sl_trigger: float,
+        market_id: Optional[int] = None,
+    ) -> bool:
+        """Place an OCO order composed of TP and SL limits."""
+        try:
+            client = await get_client()
+            m_id = market_id if market_id is not None else self.market_id
+            is_ask = (side.lower() == "sell")
+            base_amount = market_metadata.to_base_amount(size, m_id)
+            tp_price_int = market_metadata.to_price_int(tp_price, m_id)
+            sl_price_int = market_metadata.to_price_int(sl_price, m_id)
+            sl_trigger_int = market_metadata.to_price_int(sl_trigger, m_id)
+
+            if settings.dry_run:
+                logger.info(f"[DRY RUN] Would place OCO ({side}) size={size} TP={tp_price} SL={sl_price}@{sl_trigger}")
+                return True
+
+            # Issue distinct client order indices
+            coi_tp = await self._get_next_client_order_index()
+            coi_sl = await self._get_next_client_order_index()
+
+            async with self._order_semaphore:
+                _tx, tx_hash, error = await client.create_oco_orders(
+                    market_index=m_id,
+                    client_order_index_tp=coi_tp,
+                    client_order_index_sl=coi_sl,
+                    base_amount=base_amount,
+                    tp_price=tp_price_int,
+                    sl_price=sl_price_int,
+                    sl_trigger=sl_trigger_int,
+                    tp_trigger=tp_price_int,  # trigger equals tp price for limit TP
+                    is_ask=is_ask,
+                    reduce_only=True,
+                )
+
+            if error:
+                logger.error(f"Error placing OCO orders: {error}")
+                return False
+
+            logger.info(f"Placed OCO orders tx: {tx_hash}")
+            return True
+        except Exception as e:
+            logger.error(f"Error placing OCO: {e}")
             return False
     
     async def get_active_orders(self, market_id: Optional[int] = None) -> List[Order]:

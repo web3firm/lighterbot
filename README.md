@@ -123,403 +123,265 @@ From the official Lighter SDK, you need:
 ```bash
 
 MAX_POSITION_SIZE=0.01        # Max position size1. **LIGHTER_API_KEY_PRIVATE_KEY**: Your Ethereum private key (hex format, with or without 0x prefix)
+# 🚀 Lighter Trading Bot (Advanced Edition)
 
-MAX_LEVERAGE=10               # Max leverage  2. **LIGHTER_ACCOUNT_INDEX**: Your account index on Lighter (integer, e.g., 2)
-
-MAX_DAILY_DRAWDOWN=0.05       # 5% daily loss limit3. **LIGHTER_API_KEY_INDEX**: API key index (default is 253)
-
-MIN_ORDER_SIZE=0.001          # Min order size
-
-LIQUIDATION_THRESHOLD=0.8     # Liquidation alert thresholdThese credentials authenticate your account to place orders and manage positions.
-
-MAX_OPEN_ORDERS=10            # Max concurrent orders
-
-```## Project Structure
-
-
-
-## 📊 Bot Features```
-
-/root/lighterbot/
-
-### Real-Time Monitoring├── config.py              # Configuration management
-
-- Live position tracking with P&L├── lighter_client.py      # Lighter SDK client wrapper
-
-- Portfolio heat (risk exposure)├── market_data.py         # Market data fetching
-
-- Win rate and performance metrics├── order_manager.py       # Order and position management
-
-- Automatic alerts for high-risk situations├── risk_manager.py        # Risk checks and monitoring
-
-├── logger.py              # Logging system
-
-### Automated Position Management├── main.py                # Main bot orchestrator
-
-```├── strategy.py            # Trading strategies
-
-Stop-Loss: -2%  → Auto-close on losses├── test_connection.py     # Connection test script
-
-Take-Profit: +4% → Auto-close on wins├── utils.py               # Utility functions
-
-```├── requirements.txt       # Python dependencies
-
-├── .env                   # Environment variables (create this)
-
-### Signal Generation└── logs/                  # Log files directory
-
-- Multiple strategies analyze market simultaneously```
-
-- Consensus mechanism combines signals
-
-- Strength-based position sizing## Usage
-
-- Conflict detection (won't open opposing positions)
-
-### Test Connection
-
-### Performance Tracking
-
-- Trade count and win rateFirst, test your API connection:
-
-- Kelly Criterion optimization
-
-- Daily drawdown monitoring```bash
-
-- Total P&L trackingpython test_connection.py
-
-```
-
-## 📈 How It Works
-
-Expected output (with valid credentials):
-
-1. **Market Analysis** (every 60s)```
-
-   - Fetches current prices=== Testing Lighter API ===
-
-   - Updates technical indicatorsURL: https://testnet.zklighter.elliot.ai
-
-   - All strategies analyze marketMarket ID: 0
-
-   - Generates consensus signalAccount Index: 2
-
-
-
-2. **Risk Check** (before every trade)✓ Client initialized
-
-   - Kelly Criterion position sizing✓ Account: {...}
-
-   - Portfolio heat validation✓ Orderbook retrieved
-
-   - Drawdown limit check✓ Funding: [...]
-
-   - Order count verification
-
-✓✓✓ All tests passed! ✓✓✓
-
-3. **Order Execution**```
-
-   - Places market orders
-
-   - Sets stop-loss/take-profit levels### Run the Bot
-
-   - Tracks in performance history
-
-```bash
-
-4. **Position Monitoring** (every 5min)python main.py
-
-   - Auto stop-loss/take-profit```
-
-   - Liquidation risk alerts
-
-   - Performance statistics updateThe bot will:
-
-1. Initialize connection to Lighter
-
-## ⚠️ Important Safety Notes2. Load configuration from `.env`
-
-3. Start monitoring markets and positions
-
-### You Are Trading on MAINNET4. Run simple strategy (take profit at +2%, stop loss at -1%)
-
-- This is NOT a simulation5. Display status every 5 minutes
-
-- Real funds are at risk
-
-- Start with VERY SMALL positions## SDK Integration Details
-
-
-
-### Recommended for First RunThis bot uses the official `lighter-python` SDK from https://github.com/elliottech/lighter-python
-
-```bash
-
-# In .env, set conservative limits:### Key SDK Classes Used
-
-MAX_POSITION_SIZE=0.001      # Tiny positions
-
-MAX_DAILY_DRAWDOWN=0.02      # 2% daily limit- **SignerClient**: For authenticated operations (placing/cancelling orders)
-
-```- **ApiClient**: For public data (orderbooks, trades)
-
-- **OrderApi**: Order-related endpoints
-
-### Monitor Closely- **AccountApi**: Account information
-
-```bash- **CandlestickApi**: Historical data and funding rates
-
-# Watch logs in real-time:
-
-tail -f logs/bot.log### Order Placement
-
-
-
-# Check status (press Ctrl+C to stop bot gracefully)Orders use integer values for size and price:
-
-```- **Base Amount**: Multiply by 1,000,000 (6 decimals)
-
-- **Price**: Multiply by 100 (2 decimals)
-
-## 🎛️ Customization
-
-Example: To buy 0.1 BTC at $50,000:
-
-### Adjust Strategy Parameters```python
-
-base_amount = int(0.1 * 1_000_000)  # 100000
-
-**Momentum Strategy** (`strategies.py`):price = int(50000 * 100)              # 5000000
-
-```python```
-
-self.rsi_oversold = 30       # Buy threshold
-
-self.rsi_overbought = 70     # Sell threshold### Market IDs
-
-self.ema_fast = 12           # Fast EMA period
-
-self.ema_slow = 26           # Slow EMA period- `0`: BTC-PERP
-
-```- Other markets: Check Lighter documentation
-
-
-
-**Mean Reversion** (`strategies.py`):## Architecture
-
-```python
-
-self.bb_period = 20          # Bollinger Band period### Async/Await Pattern
-
-self.bb_std = 2.0            # Standard deviations
-
-```All SDK calls are async:
-
-
-
-### Add Custom Indicators (`indicators.py`)```python
-
-```pythonimport asyncio
-
-@staticmethodfrom lighter_client import get_client
-
-def my_custom_indicator(prices: List[float]) -> float:
-
-    # Your calculation hereasync def example():
-
-    return result    client = await get_client()
-
-```    orderbook = await client.get_order_book_details(0)
-
-    print(orderbook)
-
-## 📁 File Structure
-
-asyncio.run(example())
-
-``````
-
-lighterbot/
-
-├── main.py              # Main bot (✅ upgraded)### Client Management
-
-├── strategies.py        # Trading strategies (✅ new)
-
-├── indicators.py        # Technical indicators (✅ new)The bot maintains a global client instance:
-
-├── risk_manager.py      # Risk management (✅ upgraded)- `get_client()`: Returns singleton client
-
-├── order_manager.py     # Order execution- `close_client()`: Closes connections
-
-├── market_data.py       # Market data fetching
-
-├── lighter_client.py    # Lighter SDK wrapper### Error Handling
-
-├── config.py            # Configuration (✅ cleaned)
-
-├── logger.py            # LoggingAll API calls are wrapped with try/except and logging:
-
-├── .env                 # Your credentials```python
-
-└── README.md            # This filetry:
-
-```    result = await client.some_operation()
-
-    if error:
-
-## 🔄 Next Steps        logger.error(f"Operation failed: {error}")
-
-except Exception as e:
-
-1. **Test Run**: Start bot and watch for 1 hour    logger.error(f"Exception: {e}", exc_info=True)
-
-2. **Monitor Signals**: Check what signals are generated```
-
-3. **Review Trades**: Analyze first few trades
-
-4. **Adjust Parameters**: Fine-tune based on performance## Risk Management
-
-5. **Scale Gradually**: Increase position sizes slowly
-
-The bot includes several risk protections:
-
-## 📞 Quick Commands
-
-1. **Position Size Limits**: Max position size per market
-
-```bash2. **Leverage Limits**: Maximum leverage allowed
-
-# Start bot3. **Stop Loss**: Automatic stop loss at -1% (configurable)
-
-./venv/bin/python main.py4. **Take Profit**: Automatic take profit at +2% (configurable)
-
-5. **Daily Drawdown**: Max daily loss threshold
-
-# Test connection6. **Liquidation Monitoring**: Alerts when near liquidation
-
-./venv/bin/python test_connection.py
-
-Configure limits in `.env`:
-
-# Watch logs```bash
-
-tail -f logs/bot.logMAX_POSITION_SIZE=1.0
-
-MAX_LEVERAGE=10
-
-# Stop botMAX_DAILY_DRAWDOWN=0.05  # 5%
-
-Press Ctrl+C (graceful shutdown)LIQUIDATION_THRESHOLD=5.0  # 5% from liquidation price
-
-``````
-
-
-
-## 🎉 Ready to Trade!## Logging
-
-
-
-Your bot now has:Logs are written to:
-
-- ✅ Advanced multi-strategy engine- **Console**: INFO level and above
-
-- ✅ Professional risk management- **File**: All levels (specified in LOG_LEVEL)
-
-- ✅ Auto stop-loss/take-profit
-
-- ✅ Kelly Criterion position sizingLog file location: `logs/lighter_bot.log`
-
-- ✅ Real-time monitoring
-
-- ✅ Performance trackingExample log entry:
-
-```
-
-**Start the bot and monitor closely for the first few hours!**2025-11-10 11:00:00 - LighterBot - INFO - Bot started successfully
-
-2025-11-10 11:00:01 - LighterBot - DEBUG - Fetched orderbook for market 0
-
----2025-11-10 11:00:02 - LighterBot - INFO - Placed limit order: buy 0.1 @ 50000.0
-
-*Last updated: 2025-11-10 | Trading on Lighter Mainnet*```
-
-
-## Troubleshooting
-
-### API Key Not Found Error
-
-```
-Error: api key not found
-```
-
-**Solution**: Ensure your `LIGHTER_API_KEY_PRIVATE_KEY`, `LIGHTER_ACCOUNT_INDEX`, and `LIGHTER_API_KEY_INDEX` are correct in `.env`. You need actual credentials from your Lighter account.
-
-### Connection Refused Error
-
-```
-Error: Cannot connect to host
-```
-
-**Solution**: Check your internet connection and verify `LIGHTER_BASE_URL` is correct.
-
-### Insufficient Margin Error
-
-```
-Error: insufficient margin
-```
-
-**Solution**: Deposit funds to your Lighter account or reduce position size.
-
-## Safety
-
-**⚠️ IMPORTANT**: This bot trades real money. Use with caution.
-
-- Start with testnet: `https://testnet.zklighter.elliot.ai`
-- Test with small positions first
-- Monitor the bot closely
-- Set conservative risk limits
-- Keep logs for debugging
-
-## Summary of Changes
-
-### Complete SDK Integration
-
-1. **Removed custom API client** - Replaced with official lighter-python SDK
-2. **Updated all modules** - Made async-compatible for SDK
-3. **New authentication** - Uses private key + account_index + api_key_index pattern
-4. **Updated endpoints** - Uses testnet.zklighter.elliot.ai instead of api.lighter.xyz
-5. **Integer-based orders** - SDK requires integer values for size/price
-6. **Market IDs** - Uses integer market_id (0 for BTC-PERP) instead of symbol strings
-
-### Files Updated
-
-- ✅ `requirements.txt` - Now installs from official SDK GitHub repo
-- ✅ `config.py` - New auth fields (lighter_api_key_private_key, lighter_account_index, lighter_api_key_index, trading_market_id)
-- ✅ `.env` - Updated with testnet URLs and new auth structure
-- ✅ `lighter_client.py` - NEW: Wrapper for official SDK (SignerClient, ApiClient, OrderApi, etc.)
-- ✅ `market_data.py` - Async methods using SDK
-- ✅ `order_manager.py` - Async methods using SDK, integer-based orders
-- ✅ `risk_manager.py` - Async methods
-- ✅ `main.py` - Async main loop
-- ✅ `utils.py` - Async utility functions
-- ✅ `test_connection.py` - NEW: Simple connection test
-- ❌ `api_client.py` - REMOVED (replaced by lighter_client.py)
-
-## Next Steps
-
-1. **Get valid API credentials** from your Lighter account
-2. **Update .env** with your credentials
-3. **Run test_connection.py** to verify connection
-4. **Start with small positions** to test the bot
-5. **Monitor logs** for any errors
-
-## Support
-
-- Lighter Docs: https://docs.lighter.xyz
-- Lighter SDK: https://github.com/elliottech/lighter-python
-- Lighter Discord: https://discord.gg/lighter
+Production-ready algorithmic trading bot for Lighter perpetual futures built on the official `lighter-python` SDK. Includes multi-strategy signal engine, layered resilience (circuit breaker + exponential backoff), persistent order indexing, dynamic market metadata, and comprehensive risk management.
 
 ---
 
-**Built with the official Lighter Python SDK v0.1.4**
+## ✅ Core Capabilities
+
+**Trading & Strategies**
+- Momentum (RSI / MACD / EMAs)
+- Mean Reversion (Bollinger / RSI extremes)
+- Order Flow (order book + recent trades)
+- Sentiment (news / social score placeholder)
+- Optional: Market Making & Grid (disabled by default)
+
+**Risk & Safety**
+- Position size limits, max leverage, daily drawdown guard
+- Kelly fraction sizing + portfolio heat monitoring
+- Auto stop-loss / take-profit + liquidation proximity alerts
+- DRY_RUN mode (simulation without sending signed transactions)
+
+**Resilience Stack**
+- Async architecture (Python 3.13 compatible)
+- Circuit breaker guarding critical SDK calls
+- Exponential backoff retry with jitter
+- Concurrency throttling via semaphore in order management
+- Persistent `OrderIndexer` (monotonic client order IDs)
+- Dynamic `MarketMetadata` (base/price decimals resolved at runtime)
+
+**Operational Quality**
+- Structured logging + alert hook support
+- Test suite (utilities, circuit breaker, OCO flow)
+- Linting (Ruff) green baseline
+- Type checking (mypy – staged hardening plan)
+
+---
+
+## 🗂 Project Structure (key files)
+
+```
+lighterbot/
+├── config.py           # Pydantic settings w/ validators
+├── lighter_client.py   # SDK wrapper (SignerClient + APIs)
+├── order_manager.py    # Order placement, OCO, DRY_RUN safety
+├── market_data.py      # Mid-price, bid/ask, market snapshots
+├── risk_manager.py     # Advanced risk + auto position actions
+├── strategies.py       # Strategy implementations & manager
+├── utils.py            # CircuitBreaker, retry_async, metadata
+├── main.py             # Bot orchestrator loop
+├── tests/              # Pytest + pytest-asyncio tests
+├── requirements.txt    # Dependencies
+├── pyproject.toml      # Ruff configuration
+├── mypy.ini            # Type checking config
+└── README.md           # This documentation
+```
+
+---
+
+## ⚙️ Installation
+
+```bash
+git clone <repo> lighterbot
+cd lighterbot
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+---
+
+## � Configuration (`.env`)
+
+Copy `.env.example` (if present) or create manually:
+
+```
+LIGHTER_BASE_URL=https://mainnet.zklighter.elliot.ai    # Use testnet URL for safety first
+LIGHTER_WS_URL=wss://mainnet.zklighter.elliot.ai/ws
+LIGHTER_API_KEY_PRIVATE_KEY=<YOUR_API_KEY_PRIVATE_KEY>
+LIGHTER_ACCOUNT_INDEX=<YOUR_ACCOUNT_INDEX>
+LIGHTER_API_KEY_INDEX=2
+
+TRADING_SYMBOL=BTC-PERP
+TRADING_MARKET_ID=1              # Resolved at runtime; config default matches BTC-PERP
+MAX_POSITION_SIZE=0.003
+MAX_LEVERAGE=5
+MAX_DAILY_DRAWDOWN=0.05
+MIN_ORDER_SIZE=0.001
+
+LIQUIDATION_THRESHOLD=0.2        # Alert if within 20% of liquidation
+MAX_OPEN_ORDERS=3
+POSITION_CHECK_INTERVAL=60
+
+ENABLE_MOMENTUM_STRATEGY=true
+ENABLE_MEAN_REVERSION_STRATEGY=true
+ENABLE_MARKET_MAKING_STRATEGY=false
+ENABLE_GRID_TRADING_STRATEGY=false
+ENABLE_ORDERFLOW_STRATEGY=true
+ENABLE_SENTIMENT_STRATEGY=true
+
+API_RETRY_LIMIT=3
+API_TIMEOUT=30
+API_INITIAL_DELAY=1.0
+API_MAX_DELAY=30.0
+
+CB_FAILURE_THRESHOLD=5
+CB_RESET_TIMEOUT=60
+CB_HALF_OPEN_MAX_CALLS=1
+
+DRY_RUN=true        # ← Start with true (NO real trades)
+USE_TESTNET=true    # ← Use testnet first
+
+LOG_LEVEL=INFO
+LOG_FILE=logs/bot.log
+```
+
+> Set `DRY_RUN=false` only after validating behavior; keep `USE_TESTNET=true` until production ready.
+
+---
+
+## ▶️ Running the Bot
+
+1. Validate credentials (or leave DRY_RUN true):
+   ```bash
+   ./venv/bin/python test_connection.py
+   ```
+2. Start trading loop:
+   ```bash
+   ./venv/bin/python main.py
+   ```
+3. Tail logs:
+   ```bash
+   tail -f logs/bot.log
+   ```
+4. Graceful shutdown: `Ctrl + C`
+
+On startup the bot resolves market metadata; if configured `TRADING_MARKET_ID` mismatches resolved ID it logs a warning and overwrites it.
+
+---
+
+## 🧮 Order Decimal Conversion
+
+`MarketMetadata` dynamically loads:
+- Base amount decimals (e.g. 6 → multiply size by 1_000_000)
+- Price decimals (e.g. 2 → multiply price by 100)
+
+Helpers in `utils.py` ensure consistent integer conversions for all order paths (limit, market, stop-loss, take-profit, OCO).
+
+---
+
+## 🧷 Advanced Orders
+
+Implemented wrappers in `lighter_client.py` & orchestration in `order_manager.py`:
+- Stop-Loss limit
+- Take-Profit limit
+- Grouped OCO (One Cancels the Other) pair (TP + SL) with reduce-only defaults
+
+In DRY_RUN mode these paths simulate placements without submitting signed txs.
+
+---
+
+## 🛡 Risk Management Highlights
+
+`AdvancedRiskManager` provides:
+- Portfolio heat calculation
+- Kelly fraction sizing
+- Daily drawdown tracking
+- Auto close logic for extreme risk or SL/TP triggers
+- Position conflict prevention (won’t open opposing side while active)
+
+---
+
+## 🔄 Resilience Flow
+
+Call chain for critical SDK ops:
+```
+@circuit_breaker -> @retry_async -> lighter SDK async call
+```
+Circuit breaker short-circuits after configured failures; half-open probing limits risk; retry adds exponential backoff with cap.
+
+---
+
+## 🧪 Testing & Quality Gates
+
+Run tests:
+```bash
+pytest -q
+```
+
+Current coverage includes:
+- Circuit breaker state transitions
+- Retry/backoff behavior
+- Market metadata resolution & indexing
+- OCO order placement (DRY_RUN path)
+
+Linting:
+```bash
+ruff check .
+```
+
+Type checking (permissive baseline):
+```bash
+mypy .
+```
+
+Planned: tighten mypy ignore set & re-enable stricter Ruff rules incrementally.
+
+---
+
+## ⚠️ Safety Checklist
+
+Before enabling real trading:
+1. Use testnet + DRY_RUN for initial  session
+2. Confirm market metadata decimals
+3. Review risk limits (drawdown, leverage, liquidation threshold)
+4. Validate OCO protective orders appear as expected
+5. Enable only intended strategies; disable experimental ones
+6. Monitor logs for circuit breaker open events (investigate root cause)
+
+> Never deploy with placeholder or shared API keys. Protect secrets.
+
+---
+
+## � Customization
+
+Enable/disable strategies via `.env` flags. Strategy parameters (RSI bounds, Bollinger periods, etc.) are in `strategies.py`. Add new strategies by subclassing `BaseStrategy` and registering with `StrategyManager.add_strategy(...)`.
+
+Indicator extensions: place reusable logic in `indicators.py` and feed results into strategy `generate_signal` implementations.
+
+---
+
+## 🛠 Troubleshooting
+
+| Symptom | Likely Cause | Action |
+|---------|--------------|--------|
+| api key not found | Wrong private key / index | Verify `LIGHTER_API_KEY_PRIVATE_KEY`, `LIGHTER_ACCOUNT_INDEX`, `LIGHTER_API_KEY_INDEX` |
+| Cannot connect host | Network / wrong URL | Switch to testnet URL or check connectivity |
+| insufficient margin | Position too large | Reduce `MAX_POSITION_SIZE` or deposit collateral |
+| Circuit breaker OPEN | Persistent endpoint failures | Inspect logs, increase `API_MAX_DELAY`, validate host |
+| Orders not appearing (DRY_RUN) | DRY_RUN enabled | Set `DRY_RUN=false` after validation |
+
+---
+
+## � Roadmap / Next Steps
+- Clean up Pydantic deprecation warnings (migrate Config → `model_config` / `ConfigDict`)
+- Expand tests (risk manager edge cases, sentiment + orderflow strategies)
+- Metrics endpoint / Prometheus integration
+- Tighten mypy (remove broad ignores)
+- Add performance benchmarking harness
+
+---
+
+## 📚 References
+- Lighter Docs: https://docs.lighter.xyz
+- SDK: https://github.com/elliottech/lighter-python
+- Discord: https://discord.gg/lighter
+
+---
+
+_Last updated: 2025-11-11_
+
+**Use responsibly. Start with testnet and DRY_RUN.**
+## 📞 Quick Commands

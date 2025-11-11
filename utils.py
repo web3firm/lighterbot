@@ -1,513 +1,323 @@
-""""""
+"""Utility and resilience components for the Lighter trading bot.
 
-Utility functions for Lighter trading botUtility functions and testing tools
+This module provides:
+  * MarketMetadata: dynamic decimal precision + conversion helpers
+  * OrderIndexer: persistent client order index counter across restarts
+  * retry_async: exponential backoff retry decorator for async functions
+  * CircuitBreaker + circuit_breaker decorator: protect unstable external calls
+  * resolve_market_metadata: register known markets and set precision
+  * Formatting helpers for size, price, and PnL
 
+Exports used elsewhere:
+    market_metadata, order_indexer, retry_async,
+    CircuitBreaker, circuit_breaker, lighter_api_breaker,
+    resolve_market_metadata
 """
 
-- Market metadata resolutionimport asyncio
+from __future__ import annotations
 
-- Decimal conversion helpersfrom lighter_client import get_client, close_client
-
-- Retry/backoff decoratorsfrom market_data import MarketData
-
-- Order index persistencefrom order_manager import OrderManager
-
-"""from config import settings
-
-import asynciofrom logger import logger
-
+import asyncio
 import json
-
+import os
 import random
-
-import timeasync def test_connection():
-
-from pathlib import Path    """Test API connection"""
-
-from typing import Optional, Dict, Any, Callable, TypeVar    print("\n=== Testing Lighter API Connection ===\n")
-
-from functools import wraps    
-
-from logger import logger    try:
-
-        client = await get_client()
-
-        print("✓ Client initialized successfully")
-
-# Type variable for async functions        
-
-T = TypeVar('T')        # Test account info
-
-        account_info = await client.get_account_info()
-
-        print(f"✓ Account info retrieved: {account_info}")
-
-class MarketMetadata:        
-
-    """        # Test orderbook
-
-    Store market metadata (decimals, symbol, etc)        orderbooks = await client.get_order_books()
-
-    Populated at startup from exchange API        print(f"✓ Orderbooks retrieved")
-
-    """        
-
-    def __init__(self):        # Test market data
-
-        self.markets: Dict[int, Dict[str, Any]] = {}        market_data = MarketData()
-
-        self.symbol_to_id: Dict[str, int] = {}        mid_price = await market_data.get_mid_price()
-
-            print(f"✓ Current mid price: ${mid_price:.2f}")
-
-    def set_market(self, market_id: int, symbol: str, base_decimals: int,         
-
-                   quote_decimals: int, price_decimals: int, **kwargs):        best_bid, best_ask = await market_data.get_best_bid_ask()
-
-        """Store market metadata"""        print(f"✓ Best bid: ${best_bid:.2f}, Best ask: ${best_ask:.2f}")
-
-        self.markets[market_id] = {        
-
-            'market_id': market_id,        # Test funding rate
-
-            'symbol': symbol,        funding = await market_data.get_funding_rate()
-
-            'base_decimals': base_decimals,        print(f"✓ Funding rate: {funding}")
-
-            'quote_decimals': quote_decimals,        
-
-            'price_decimals': price_decimals,        print("\n✓✓✓ All tests passed! ✓✓✓\n")
-
-            **kwargs        return True
-
-        }        
-
-        self.symbol_to_id[symbol] = market_id    except Exception as e:
-
-            print(f"\n✗ Error: {e}\n")
-
-    def get_market_id(self, symbol: str) -> Optional[int]:        logger.error(f"Connection test failed: {e}", exc_info=True)
-
-        """Get market ID from symbol"""        return False
-
-        return self.symbol_to_id.get(symbol)    finally:
-
-            await close_client()
-
-    def get_market(self, market_id: int) -> Optional[Dict[str, Any]]:
-
-        """Get market metadata by ID"""
-
-        return self.markets.get(market_id)async def get_account_status():
-
-        """Display account status"""
-
-    def get_base_decimals(self, market_id: int) -> int:    print("\n=== Account Status ===\n")
-
-        """Get base decimals for market (default 6 if not found)"""    
-
-        market = self.markets.get(market_id)    try:
-
-        return market.get('base_decimals', 6) if market else 6        order_manager = OrderManager()
-
-            
-
-    def get_price_decimals(self, market_id: int) -> int:        # Account info
-
-        """Get price decimals for market (default 2 if not found)"""        account_info = await order_manager.get_account_info()
-
-        market = self.markets.get(market_id)        print(f"Account: {account_info}")
-
-        return market.get('price_decimals', 2) if market else 2        
-
-            # Positions
-
-    def to_base_amount(self, size: float, market_id: int) -> int:        positions = await order_manager.get_positions()
-
-        """        print(f"\nOpen Positions: {len(positions)}")
-
-        Convert human-readable size to exchange base units        for pos in positions:
-
-                    side = "LONG" if pos.is_long else "SHORT"
-
-        Example: size=0.001 BTC with 6 decimals → 1000            print(f"  Market {pos.market_id}: {side} {abs(pos.size)}")
-
-        """            print(f"    Entry: ${pos.entry_price:.2f}, Mark: ${pos.mark_price:.2f}")
-
-        decimals = self.get_base_decimals(market_id)            print(f"    PnL: ${pos.unrealized_pnl:.2f} ({pos.pnl_percentage:.2f}%)")
-
-        multiplier = 10 ** decimals        
-
-        return int(size * multiplier)        # Active orders
-
-            orders = await order_manager.get_active_orders()
-
-    def from_base_amount(self, amount: int, market_id: int) -> float:        print(f"\nActive Orders: {len(orders)}")
-
-        """        for order in orders:
-
-        Convert exchange base units to human-readable size            print(f"  {order.side} {order.size} @ {order.price or 'MARKET'}")
-
-                
-
-        Example: amount=1000 with 6 decimals → 0.001 BTC    except Exception as e:
-
-        """        print(f"Error: {e}")
-
-        decimals = self.get_base_decimals(market_id)        logger.error(f"Failed to get account status: {e}", exc_info=True)
-
-        divider = 10 ** decimals    finally:
-
-        return amount / divider        await close_client()
-
-    
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Tuple, TypeVar
+
+from config import settings
+from logger import logger
+
+T = TypeVar("T")
+
+
+class MarketMetadata:
+    """Holds market decimal metadata and provides conversion helpers.
+
+    Stored per market_id:
+        base_decimals: decimals for base asset sizing (lots multiplier)
+        quote_decimals: decimals for quote asset (not heavily used yet)
+        price_decimals: decimals for price integer conversion
+    """
+
+    def __init__(self) -> None:
+        self._markets: Dict[int, Dict[str, int]] = {}
+        self._symbol_to_id: Dict[str, int] = {}
+        self._lock = asyncio.Lock()
+
+    async def set_market(
+        self,
+        market_id: int,
+        symbol: str,
+        base_decimals: int,
+        quote_decimals: int,
+        price_decimals: int,
+    ) -> None:
+        async with self._lock:
+            self._markets[market_id] = {
+                "base_decimals": base_decimals,
+                "quote_decimals": quote_decimals,
+                "price_decimals": price_decimals,
+                "symbol": symbol,
+            }
+            self._symbol_to_id[symbol] = market_id
+            logger.debug(
+                f"Registered market {symbol} id={market_id} base={base_decimals} price={price_decimals}"
+            )
+
+    def get_market(self, market_id: int) -> Dict[str, Any]:
+        return self._markets.get(market_id, {})
+
+    def get_market_id(self, symbol: str) -> Optional[int]:
+        return self._symbol_to_id.get(symbol)
+
+    def to_base_amount(self, size: float, market_id: int) -> int:
+        info = self.get_market(market_id)
+        base_decimals = info.get("base_decimals", 6)
+        return int(round(size * (10 ** base_decimals)))
+
+    def from_base_amount(self, base_amount: int, market_id: int) -> float:
+        info = self.get_market(market_id)
+        base_decimals = info.get("base_decimals", 6)
+        return base_amount / (10 ** base_decimals)
 
     def to_price_int(self, price: float, market_id: int) -> int:
-
-        """async def get_market_info():
-
-        Convert human-readable price to exchange price units    """Display market information"""
-
-            print("\n=== Market Information ===\n")
-
-        Example: price=3500.50 with 2 decimals → 350050    
-
-        """    try:
-
-        decimals = self.get_price_decimals(market_id)        market_data = MarketData()
-
-        multiplier = 10 ** decimals        
-
-        return int(price * multiplier)        # Market summary
-
-            summary = await market_data.get_market_summary()
-
-    def from_price_int(self, price_int: int, market_id: int) -> float:        print(f"Market ID: {summary.get('market_id', settings.trading_market_id)}")
-
-        """        print(f"Mid Price: ${summary.get('mid_price', 0):.2f}")
-
-        Convert exchange price units to human-readable price        print(f"Best Bid: ${summary.get('best_bid', 0):.2f}")
-
-                print(f"Best Ask: ${summary.get('best_ask', 0):.2f}")
-
-        Example: price_int=350050 with 2 decimals → 3500.50        print(f"Spread: {summary.get('spread_bps', 0):.2f} bps")
-
-        """        print(f"Funding Rate: {summary.get('funding_rate', 0):.6f}")
-
-        decimals = self.get_price_decimals(market_id)        print(f"Recent Trades: {summary.get('recent_trades_count', 0)}")
-
-        divider = 10 ** decimals        
-
-        return price_int / divider        # Orderbook depth
-
-        depth = summary.get('orderbook_depth', {})
-
-        print(f"\nOrderbook Depth:")
-
-# Global market metadata instance        print(f"  Bids: {depth.get('bids', 0)} levels")
-
-market_metadata = MarketMetadata()        print(f"  Asks: {depth.get('asks', 0)} levels")
-
-        
-
-    except Exception as e:
-
-class OrderIndexer:        print(f"Error: {e}")
-
-    """        logger.error(f"Failed to get market info: {e}", exc_info=True)
-
-    Persist client_order_index to avoid duplicate orders on restart    finally:
-
-    """        await close_client()
-
-    def __init__(self, filepath: str = "data/order_index.json"):
-
-        self.filepath = Path(filepath)
-
-        self.filepath.parent.mkdir(parents=True, exist_ok=True)async def place_test_order():
-
-        self.current_index = self._load()    """Place a small test order"""
-
-        self.lock = asyncio.Lock()    print("\n=== Placing Test Order ===\n")
-
-        
-
-    def _load(self) -> int:    try:
-
-        """Load last order index from file"""        market_data = MarketData()
-
-        if self.filepath.exists():        order_manager = OrderManager()
-
-            try:        
-
-                with open(self.filepath, 'r') as f:        # Get current price
-
-                    data = json.load(f)        mid_price = await market_data.get_mid_price()
-
-                    index = data.get('last_index', 0)        print(f"Current mid price: ${mid_price:.2f}")
-
-                    logger.info(f"Loaded last order index: {index}")        
-
-                    return index        # Place a small limit buy order 5% below market
-
-            except Exception as e:        test_price = mid_price * 0.95
-
-                logger.error(f"Error loading order index: {e}")        test_size = 0.001  # Very small size for testing
-
-                return 0        
-
-        return 0        print(f"\nPlacing limit BUY order:")
-
-            print(f"  Size: {test_size}")
-
-    def _save(self, index: int):        print(f"  Price: ${test_price:.2f}")
-
-        """Save order index to file"""        
-
-        try:        order = await order_manager.place_limit_order(
-
-            with open(self.filepath, 'w') as f:            side="buy",
-
-                json.dump({            size=test_size,
-
-                    'last_index': index,            price=test_price
-
-                    'timestamp': time.time()        )
-
-                }, f, indent=2)        
-
-        except Exception as e:        if order:
-
-            logger.error(f"Error saving order index: {e}")            print(f"\n✓ Order placed successfully!")
-
-                print(f"  Client Order Index: {order.client_order_index}")
-
-    async def get_next(self) -> int:        else:
-
-        """Get next order index atomically"""            print("\n✗ Failed to place order")
-
-        async with self.lock:        
-
-            self.current_index += 1    except Exception as e:
-
-            self._save(self.current_index)        print(f"\nError: {e}")
-
-            return self.current_index        logger.error(f"Failed to place test order: {e}", exc_info=True)
-
-        finally:
-
-    async def peek(self) -> int:        await close_client()
-
-        """Get current index without incrementing"""
-
-        async with self.lock:
-
-            return self.current_indexasync def cancel_all_orders():
-
-    """Cancel all open orders"""
-
-    print("\n=== Cancelling All Orders ===\n")
-
-# Global order indexer    
-
-order_indexer = OrderIndexer()    try:
-
-        order_manager = OrderManager()
-
-        
-
-def retry_async(        # Get current orders
-
-    max_attempts: int = 3,        orders = await order_manager.get_active_orders()
-
-    initial_delay: float = 1.0,        print(f"Current active orders: {len(orders)}")
-
-    max_delay: float = 30.0,        
-
-    exponential_base: float = 2.0,        if len(orders) == 0:
-
-    jitter: bool = True,            print("No orders to cancel")
-
-    exceptions: tuple = (Exception,)            return
-
-):        
-
-    """        # Cancel all
-
-    Retry decorator with exponential backoff and jitter        success = await order_manager.cancel_all_orders()
-
-            
-
-    Args:        if success:
-
-        max_attempts: Maximum number of retry attempts            print("✓ All orders cancelled successfully")
-
-        initial_delay: Initial delay in seconds        else:
-
-        max_delay: Maximum delay in seconds            print("✗ Failed to cancel orders")
-
-        exponential_base: Base for exponential backoff        
-
-        jitter: Add random jitter to delays    except Exception as e:
-
-        exceptions: Tuple of exceptions to catch        print(f"Error: {e}")
-
-            logger.error(f"Failed to cancel orders: {e}", exc_info=True)
-
-    Usage:    finally:
-
-        @retry_async(max_attempts=3)        await close_client()
-
-        async def fetch_data():
-
-            ...
-
-    """def show_menu():
-
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:    """Show interactive menu"""
-
-        @wraps(func)    print("\n" + "="*50)
-
-        async def wrapper(*args, **kwargs) -> T:    print("Lighter Trading Bot - Utilities")
-
-            attempt = 0    print("="*50)
-
-            while attempt < max_attempts:    print("\n1. Test API Connection")
-
-                try:    print("2. Show Account Status")
-
-                    return await func(*args, **kwargs)    print("3. Show Market Info")
-
-                except exceptions as e:    print("4. Place Test Order")
-
-                    attempt += 1    print("5. Cancel All Orders")
-
-                    if attempt >= max_attempts:    print("0. Exit")
-
-                        logger.error(    print()
-
-                            f"Function {func.__name__} failed after {max_attempts} attempts",
-
-                            exc_info=True
-
-                        )async def main():
-
-                        raise    """Main utility menu"""
-
-                        while True:
-
-                    # Calculate delay with exponential backoff        show_menu()
-
-                    delay = min(        
-
-                        initial_delay * (exponential_base ** (attempt - 1)),        try:
-
-                        max_delay            choice = input("Select option: ").strip()
-
-                    )            
-
-                                if choice == "0":
-
-                    # Add jitter                print("Exiting...")
-
-                    if jitter:                break
-
-                        delay = delay * (0.5 + random.random())            elif choice == "1":
-
-                                    await test_connection()
-
-                    logger.warning(            elif choice == "2":
-
-                        f"Function {func.__name__} failed (attempt {attempt}/{max_attempts}), "                await get_account_status()
-
-                        f"retrying in {delay:.2f}s: {e}"            elif choice == "3":
-
-                    )                await get_market_info()
-
-                    await asyncio.sleep(delay)            elif choice == "4":
-
-                            await place_test_order()
-
-            # Should never reach here            elif choice == "5":
-
-            raise RuntimeError(f"Retry logic error in {func.__name__}")                await cancel_all_orders()
-
-                    else:
-
-        return wrapper                print("Invalid option")
-
-    return decorator            
-
-            input("\nPress Enter to continue...")
-
-            
-
-async def resolve_market_metadata(client, symbol: str) -> Optional[int]:        except KeyboardInterrupt:
-
-    """            print("\nExiting...")
-
-    Resolve market metadata from exchange            break
-
-            except Exception as e:
-
-    Returns:            print(f"Error: {e}")
-
-        market_id if found, None otherwise            logger.error(f"Menu error: {e}", exc_info=True)
-
-    
-
-    This should be called at startup to populate market_metadata
-
-    """if __name__ == "__main__":
-
-    try:    asyncio.run(main())
-
-        # Try to get exchange stats which includes market info
+        info = self.get_market(market_id)
+        price_decimals = info.get("price_decimals", 2)
+        return int(round(price * (10 ** price_decimals)))
+
+    def from_price_int(self, price_int: int, market_id: int) -> float:
+        info = self.get_market(market_id)
+        price_decimals = info.get("price_decimals", 2)
+        return price_int / (10 ** price_decimals)
+
+
+market_metadata = MarketMetadata()
+
+
+class OrderIndexer:
+    """Persistent client order index counter.
+
+    Stores last index in a JSON file so we don't collide after restarts.
+    """
+
+    def __init__(self, file_path: str = "data/order_index.json") -> None:
+        self.file_path = file_path
+        self._lock = asyncio.Lock()
+        os.makedirs(os.path.dirname(self.file_path), exist_ok=True)
+        if not os.path.exists(self.file_path):
+            self._write_state({"last_index": 0})
+
+    def _read_state(self) -> Dict[str, int]:
+        try:
+            with open(self.file_path, "r") as f:
+                return json.load(f)
+        except Exception:
+            return {"last_index": 0}
+
+    def _write_state(self, data: Dict[str, int]) -> None:
+        tmp_path = self.file_path + ".tmp"
+        with open(tmp_path, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp_path, self.file_path)
+
+    async def get_next(self) -> int:
+        async with self._lock:
+            state = self._read_state()
+            nxt = state.get("last_index", 0) + 1
+            state["last_index"] = nxt
+            self._write_state(state)
+            return nxt
+
+    async def peek(self) -> int:
+        async with self._lock:
+            state = self._read_state()
+            return state.get("last_index", 0)
+
+
+order_indexer = OrderIndexer()
+
+
+def retry_async(
+    max_attempts: int = 3,
+    initial_delay: float = 1.0,
+    max_delay: float = 30.0,
+    exponential_base: float = 2.0,
+    jitter: bool = True,
+    exceptions: Tuple[type, ...] = (Exception,),
+):
+    """Async exponential backoff retry decorator."""
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        async def wrapper(*args, **kwargs) -> T:
+            attempt = 0
+            while attempt < max_attempts:
+                try:
+                    return await func(*args, **kwargs)
+                except exceptions as e:
+                    attempt += 1
+                    if attempt >= max_attempts:
+                        logger.error(
+                            f"Function {func.__name__} failed after {max_attempts} attempts", exc_info=True
+                        )
+                        raise
+                    delay = min(initial_delay * (exponential_base ** (attempt - 1)), max_delay)
+                    if jitter:
+                        delay *= 0.5 + random.random()
+                    logger.warning(
+                        f"{func.__name__} attempt {attempt}/{max_attempts} failed: {e}; retrying in {delay:.2f}s"
+                    )
+                    await asyncio.sleep(delay)
+            raise RuntimeError(f"Retry logic error in {func.__name__}")
+
+        return wrapper  # type: ignore
+
+    return decorator
+
+
+async def resolve_market_metadata(client: Any, symbol: str) -> Optional[int]:
+    """Register known market metadata for a symbol. Returns market_id or None."""
+    try:
         logger.info(f"Resolving market metadata for {symbol}...")
-        
-        # Fallback: Use known markets for Lighter
-        # BTC-PERP is market_id=0, uses 6 decimals for base, 2 for price
         known_markets = {
-            'BTC-PERP': {'id': 0, 'base_decimals': 6, 'price_decimals': 2},
-            'ETH-PERP': {'id': 1, 'base_decimals': 6, 'price_decimals': 2},
-            'NEAR-PERP': {'id': 2, 'base_decimals': 6, 'price_decimals': 2},
+            "BTC-PERP": {"id": 1, "base_decimals": 6, "price_decimals": 2},
+            "ETH-PERP": {"id": 2, "base_decimals": 6, "price_decimals": 2},
+            "NEAR-PERP": {"id": 3, "base_decimals": 6, "price_decimals": 2},
         }
-        
         if symbol in known_markets:
             info = known_markets[symbol]
-            market_metadata.set_market(
-                market_id=info['id'],
+            await market_metadata.set_market(
+                market_id=info["id"],
                 symbol=symbol,
-                base_decimals=info['base_decimals'],
+                base_decimals=info["base_decimals"],
                 quote_decimals=6,
-                price_decimals=info['price_decimals']
+                price_decimals=info["price_decimals"],
             )
             logger.info(
-                f"✓ Registered market {symbol} → ID {info['id']} "
-                f"(base_decimals={info['base_decimals']}, price_decimals={info['price_decimals']})"
+                f"Registered {symbol} id={info['id']} base={info['base_decimals']} price={info['price_decimals']}"
             )
-            return info['id']
-        
+            return info["id"]
         logger.error(f"Unknown market symbol: {symbol}")
-        logger.error(f"Known markets: {list(known_markets.keys())}")
         return None
-        
     except Exception as e:
         logger.error(f"Error resolving market metadata: {e}", exc_info=True)
         return None
 
 
 def format_size(size: float, decimals: int = 4) -> str:
-    """Format size for display"""
-    return f"{size:.{decimals}f}".rstrip('0').rstrip('.')
+    return f"{size:.{decimals}f}".rstrip("0").rstrip(".")
 
 
 def format_price(price: float, decimals: int = 2) -> str:
-    """Format price for display"""
     return f"${price:,.{decimals}f}"
 
 
 def format_pnl(pnl: float) -> str:
-    """Format P&L with color indicators"""
     sign = "+" if pnl >= 0 else ""
     return f"{sign}${pnl:,.2f}"
+
+
+class CircuitBreaker:
+    """Simple async-aware circuit breaker."""
+
+    def __init__(
+        self,
+        failure_threshold: int = 5,
+        reset_timeout: float = 60.0,
+        half_open_max_calls: int = 1,
+    ) -> None:
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self.half_open_max_calls = half_open_max_calls
+        self._state: str = "closed"  # closed | open | half_open
+        self._failure_count: int = 0
+        self._last_failure_time: float = 0.0
+        self._half_open_in_flight: int = 0
+        self._lock = asyncio.Lock()
+
+    async def allow_call(self) -> bool:
+        async with self._lock:
+            now = time.time()
+            if self._state == "open":
+                if now - self._last_failure_time >= self.reset_timeout:
+                    self._state = "half_open"
+                    self._half_open_in_flight = 0
+                else:
+                    return False
+            if self._state == "half_open":
+                if self._half_open_in_flight >= self.half_open_max_calls:
+                    return False
+                self._half_open_in_flight += 1
+                return True
+            return True
+
+    async def on_success(self) -> None:
+        async with self._lock:
+            if self._state in ("half_open", "open"):
+                self._state = "closed"
+                self._failure_count = 0
+                self._half_open_in_flight = 0
+                self._last_failure_time = 0.0
+
+    async def on_failure(self) -> None:
+        async with self._lock:
+            self._failure_count += 1
+            self._last_failure_time = time.time()
+            if self._state == "half_open" or self._failure_count >= self.failure_threshold:
+                self._state = "open"
+                self._half_open_in_flight = 0
+
+    # Introspection helpers
+    def state(self) -> str:
+        return self._state
+
+    def failure_count(self) -> int:
+        return self._failure_count
+
+
+def circuit_breaker(
+    breaker: CircuitBreaker,
+    exceptions: Tuple[type, ...] = (Exception,),
+):
+    """Decorator to enforce circuit breaker around async call."""
+
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        async def wrapper(*args, **kwargs):
+            allowed = await breaker.allow_call()
+            if not allowed:
+                raise RuntimeError("Circuit breaker is open; rejecting call")
+            try:
+                result = await func(*args, **kwargs)
+                await breaker.on_success()
+                return result
+            except exceptions:
+                await breaker.on_failure()
+                raise
+
+        return wrapper  # type: ignore
+
+    return decorator
+
+
+# Global circuit breaker instance configured from settings
+lighter_api_breaker = CircuitBreaker(
+    failure_threshold=settings.cb_failure_threshold,
+    reset_timeout=settings.cb_reset_timeout,
+    half_open_max_calls=settings.cb_half_open_max_calls,
+)
+
+
+__all__ = [
+    "market_metadata",
+    "order_indexer",
+    "retry_async",
+    "resolve_market_metadata",
+    "CircuitBreaker",
+    "circuit_breaker",
+    "lighter_api_breaker",
+    "OrderIndexer",
+    "MarketMetadata",
+    "format_size",
+    "format_price",
+    "format_pnl",
+]
+

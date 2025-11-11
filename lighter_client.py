@@ -6,7 +6,7 @@ import asyncio
 from typing import Dict, Any, Optional, List
 from config import settings
 from logger import logger
-from utils import retry_async, resolve_market_metadata
+from utils import retry_async, resolve_market_metadata, circuit_breaker, lighter_api_breaker
 import eth_account
 
 
@@ -100,16 +100,18 @@ class LighterClient:
         await self.api_client.close()
     
     # Market Data Methods
+    @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_order_books(self, market_id: Optional[int] = None) -> Dict[str, Any]:
         """Get order books"""
         try:
-            result = await self.order_api.order_books(market_id=market_id or 255)
+            result = await self.order_api.order_books(market_id=market_id or settings.trading_market_id)
             return result.to_dict() if hasattr(result, 'to_dict') else result
         except Exception as e:
             logger.error(f"Error getting order books: {e}")
             raise  # Let retry_async handle this
     
+    @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_order_book_details(self, market_id: int) -> Dict[str, Any]:
         """Get order book details for specific market"""
@@ -120,6 +122,7 @@ class LighterClient:
             logger.error(f"Error getting order book details: {e}")
             raise  # Let retry_async handle this
     
+    @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_recent_trades(self, market_id: int, limit: int = 100) -> List[Dict]:
         """Get recent trades"""
@@ -132,6 +135,7 @@ class LighterClient:
             logger.error(f"Error getting recent trades: {e}")
             raise  # Let retry_async handle this
     
+    @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_candlesticks(self, market_id: int, resolution: str = "1h", limit: int = 100) -> List[Dict]:
         """Get candlestick data"""
@@ -148,6 +152,7 @@ class LighterClient:
             logger.error(f"Error getting candlesticks: {e}")
             raise  # Let retry_async handle this
     
+    @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_funding_rates(self, market_id: Optional[int] = None) -> List[Dict]:
         """Get funding rates"""
@@ -161,6 +166,7 @@ class LighterClient:
             raise  # Let retry_async handle this
     
     # Account Methods
+    @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_account_info(self, account_index: Optional[int] = None) -> Dict[str, Any]:
         """Get account information"""
@@ -189,6 +195,7 @@ class LighterClient:
             return []
     
     # Order Methods
+    @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_active_orders(self, market_id: int, account_index: Optional[int] = None) -> List[Dict]:
         """Get active orders"""
@@ -221,9 +228,13 @@ class LighterClient:
         is_ask: bool,  # True for sell, False for buy
         reduce_only: bool = False
     ) -> tuple[Any, Any, Optional[str]]:
-        """Create a limit order"""
+        """
+        Create a limit order
+        
+        IMPORTANT: SDK create_order returns (CreateOrder, TxHash, error_str)
+        """
         try:
-            return await self.signer_client.create_order(
+            result = await self.signer_client.create_order(
                 market_index=market_index,
                 client_order_index=client_order_index,
                 base_amount=base_amount,
@@ -234,6 +245,9 @@ class LighterClient:
                 reduce_only=reduce_only,
                 trigger_price=0
             )
+            # Unpack: (CreateOrder object, TxHash object, error_str)
+            create_order_obj, tx_hash_obj, error_str = result
+            return create_order_obj, tx_hash_obj, error_str
         except Exception as e:
             logger.error(f"Error creating limit order: {e}")
             return None, None, str(e)
@@ -247,9 +261,13 @@ class LighterClient:
         is_ask: bool,
         reduce_only: bool = False
     ) -> tuple[Any, Any, Optional[str]]:
-        """Create a market order"""
+        """
+        Create a market order
+        
+        IMPORTANT: SDK returns (CreateOrder, TxHash, error_str), NOT (tx_info, tx_hash, error)
+        """
         try:
-            return await self.signer_client.create_market_order(
+            result = await self.signer_client.create_market_order(
                 market_index=market_index,
                 client_order_index=client_order_index,
                 base_amount=base_amount,
@@ -257,6 +275,9 @@ class LighterClient:
                 is_ask=is_ask,
                 reduce_only=reduce_only
             )
+            # Unpack: (CreateOrder object, TxHash object, error_str)
+            create_order_obj, tx_hash_obj, error_str = result
+            return create_order_obj, tx_hash_obj, error_str
         except Exception as e:
             logger.error(f"Error creating market order: {e}")
             return None, None, str(e)
@@ -281,6 +302,76 @@ class LighterClient:
             )
         except Exception as e:
             logger.error(f"Error cancelling all orders: {e}")
+            return None, None, str(e)
+
+    # --- Advanced Order Types wrappers (stop-loss, take-profit, grouped OCO) ---
+
+    async def create_stop_loss(self, market_index: int, client_order_index: int, base_amount: int, trigger_price: int, price: int, is_ask: bool, reduce_only: bool = True) -> tuple[Any, Any, Optional[str]]:
+        """Create a stop-loss limit order."""
+        try:
+            return await self.signer_client.create_sl_limit_order(
+                market_index=market_index,
+                client_order_index=client_order_index,
+                base_amount=base_amount,
+                trigger_price=trigger_price,
+                price=price,
+                is_ask=is_ask,
+                reduce_only=reduce_only,
+            )
+        except Exception as e:
+            logger.error(f"Error creating stop-loss order: {e}")
+            return None, None, str(e)
+
+    async def create_take_profit(self, market_index: int, client_order_index: int, base_amount: int, trigger_price: int, price: int, is_ask: bool, reduce_only: bool = True) -> tuple[Any, Any, Optional[str]]:
+        """Create a take-profit limit order."""
+        try:
+            return await self.signer_client.create_tp_limit_order(
+                market_index=market_index,
+                client_order_index=client_order_index,
+                base_amount=base_amount,
+                trigger_price=trigger_price,
+                price=price,
+                is_ask=is_ask,
+                reduce_only=reduce_only,
+            )
+        except Exception as e:
+            logger.error(f"Error creating take-profit order: {e}")
+            return None, None, str(e)
+
+    async def create_oco_orders(self, market_index: int, client_order_index_tp: int, client_order_index_sl: int, base_amount: int, tp_price: int, sl_price: int, sl_trigger: int, tp_trigger: int, is_ask: bool, reduce_only: bool = True) -> tuple[Any, Any, Optional[str]]:
+        """Create a One-Cancels-the-Other grouped order (TP + SL)."""
+        try:
+            from lighter.signer_client import CreateOrderTxReq
+            take_profit = CreateOrderTxReq(
+                MarketIndex=market_index,
+                ClientOrderIndex=client_order_index_tp,
+                BaseAmount=base_amount,
+                Price=tp_price,
+                IsAsk=int(is_ask),
+                Type=lighter.SignerClient.ORDER_TYPE_TAKE_PROFIT_LIMIT,
+                TimeInForce=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                ReduceOnly=int(reduce_only),
+                TriggerPrice=tp_trigger,
+                OrderExpiry=lighter.SignerClient.DEFAULT_28_DAY_ORDER_EXPIRY,
+            )
+            stop_loss = CreateOrderTxReq(
+                MarketIndex=market_index,
+                ClientOrderIndex=client_order_index_sl,
+                BaseAmount=base_amount,
+                Price=sl_price,
+                IsAsk=int(is_ask),
+                Type=lighter.SignerClient.ORDER_TYPE_STOP_LOSS_LIMIT,
+                TimeInForce=lighter.SignerClient.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                ReduceOnly=int(reduce_only),
+                TriggerPrice=sl_trigger,
+                OrderExpiry=lighter.SignerClient.DEFAULT_28_DAY_ORDER_EXPIRY,
+            )
+            return await self.signer_client.create_grouped_orders(
+                grouping_type=lighter.SignerClient.GROUPING_TYPE_ONE_CANCELS_THE_OTHER,
+                orders=[take_profit, stop_loss],
+            )
+        except Exception as e:
+            logger.error(f"Error creating OCO orders: {e}")
             return None, None, str(e)
 
 
