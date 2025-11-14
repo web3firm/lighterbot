@@ -69,9 +69,11 @@ class OrderFlowAnalyzer:
             logger.error(f"Error fetching recent trades: {e}")
             return []
     
-    async def analyze_trade_flow(self, market_id: int = 0, lookback: int = 50) -> OrderFlowSignal:
+    async def analyze_trade_flow(self, market_id: int = 0, lookback: int = 30) -> OrderFlowSignal:
         """
         Analyze recent trade flow for buy/sell pressure
+        
+        OPTIMIZED FOR 1M SCALPING: 30 trades instead of 50 (faster signals)
         
         Key insight:
         - is_maker_ask = True means maker had a SELL order, taker BOUGHT (BULLISH)
@@ -216,7 +218,7 @@ class OrderFlowAnalyzer:
         """
         try:
             # Analyze trade flow (this is the most reliable data we have)
-            return await self.analyze_trade_flow(market_id, lookback=50)
+            return await self.analyze_trade_flow(market_id, lookback=30)  # 30 trades for 1m scalping
         
         except Exception as e:
             logger.error(f"Error in orderflow analysis: {e}")

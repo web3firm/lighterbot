@@ -4,7 +4,7 @@ Order management module using official Lighter SDK
 import asyncio
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from lighter_client import get_client
 from config import settings
 from logger import logger
@@ -59,18 +59,54 @@ class Position:
     
     @classmethod
     def from_api_response(cls, data: Dict[str, Any]) -> 'Position':
-        """Create Position from API response"""
-        size = float(data.get("size", data.get("base_amount", 0)))
+        """Create Position from API response
+        
+        API Response format:
+        {
+            "market_id": 0,
+            "symbol": "ETH",
+            "position": "0.0200",  # Size in coins (negative for short, positive for long)
+            "avg_entry_price": "3431.30",
+            "position_value": "68.516000",  # Notional value
+            "unrealized_pnl": "0.110100",
+            "initial_margin_fraction": "20.00",  # e.g., 20% = 5x leverage
+            "liquidation_price": "6509.64678853755"
+        }
+        """
+        # Parse size from different possible fields
+        size = float(data.get("position", data.get("size", data.get("base_amount", 0))))
+        
+        # Apply sign for short positions (API uses sign field)
+        sign = int(data.get("sign", 1))
+        if sign < 0 and size > 0:
+            size = -size  # Make negative for short
+        
+        # Parse entry price
+        entry_price = float(data.get("avg_entry_price", data.get("entryPrice", data.get("entry_price", 0))))
+        
+        # Calculate mark price from position_value if available, otherwise use entry_price
+        position_value = float(data.get("position_value", 0))
+        if abs(size) > 0 and position_value > 0:
+            mark_price = abs(position_value) / abs(size)
+        else:
+            mark_price = float(data.get("mark_price", data.get("markPrice", entry_price)))
+        
+        # Parse leverage from initial_margin_fraction (e.g., "20.00" = 20% = 5x leverage)
+        initial_margin_fraction = float(data.get("initial_margin_fraction", 20.0))  # Default 20% = 5x
+        leverage = 100.0 / initial_margin_fraction if initial_margin_fraction > 0 else 5.0
+        
+        # Calculate margin (collateral) = position_value / leverage
+        margin = abs(position_value) / leverage if leverage > 0 else abs(position_value)
         
         return cls(
-            market_id=int(data.get("marketId", data.get("market_id", 0))),
+            market_id=int(data.get("market_id", data.get("marketId", 0))),
             size=size,
-            entry_price=float(data.get("entryPrice", data.get("entry_price", 0))),
-            mark_price=float(data.get("markPrice", data.get("mark_price", 0))),
-            liquidation_price=float(data.get("liquidationPrice")) if data.get("liquidationPrice") else None,
-            unrealized_pnl=float(data.get("unrealizedPnl", data.get("unrealized_pnl", 0))),
-            margin=float(data.get("margin", 0)),
-            leverage=float(data.get("leverage", 1))
+            entry_price=entry_price,
+            mark_price=mark_price,
+            liquidation_price=float(data.get("liquidation_price", data.get("liquidationPrice", 0))) if data.get("liquidation_price") or data.get("liquidationPrice") else None,
+            unrealized_pnl=float(data.get("unrealized_pnl", data.get("unrealizedPnl", 0))),
+            margin=margin,
+            leverage=leverage
         )
     
     @property
@@ -105,6 +141,19 @@ class OrderManager:
         self.market_id = settings.trading_market_id
         # Removed: self._client_order_index_counter - now using global order_indexer
         self._order_semaphore = asyncio.Semaphore(settings.max_open_orders)
+        
+        # Account info cache (60 second refresh to prevent rate limits)
+        self.account_info_cache = None
+        self.account_info_cache_time = datetime.now() - timedelta(seconds=100)
+        
+        # OCO order tracking (exchange-managed TP/SL)
+        self.oco_orders: Dict[str, Dict] = {}  # position_id -> {tp_order_id, sl_order_id, tp_price, sl_price}
+        self.portfolio_oco_active = False  # Track if portfolio-level OCO is active
+        self.portfolio_oco_ids: Dict[str, any] = {}  # {'tp_index': X, 'sl_index': Y, 'tp_price': $, 'sl_price': $}
+        self.local_positions: List[Dict] = []  # Track positions locally for immediate OCO calculation
+        
+        # Hybrid mode: Track which positions have bot taking over
+        self.trailing_active: Dict[str, bool] = {}  # position_id -> is_trailing_active
     
     async def _get_next_client_order_index(self) -> int:
         """Get next client order index using persistent indexer"""
@@ -292,6 +341,307 @@ class OrderManager:
         except Exception as e:
             logger.error(f"Error placing market order: {e}")
             return None
+    
+    async def place_position_with_oco(
+        self,
+        side: str,
+        size: float,
+        entry_price: float,
+        tp_pct: float = 3.0,  # FIXED: TP @ +3% (backup after bot trailing)
+        sl_pct: float = 2.0,
+        market_id: Optional[int] = None
+    ) -> tuple[bool, Optional[dict]]:
+        """
+        PORTFOLIO-LEVEL OCO STRATEGY: Open position + update portfolio OCO
+        
+        Instead of creating separate OCO for each position (which causes the
+        problem of multiple TP/SL levels), we:
+        1. Open the position
+        2. Calculate average entry of ALL positions
+        3. Create ONE OCO for the entire portfolio
+        
+        This way, +2% PnL on the TOTAL portfolio triggers TP, not per-position.
+        
+        Args:
+            side: "buy" or "sell"
+            size: Position size
+            entry_price: Entry price (for logging only)
+            tp_pct: Take-profit percentage (default 2%)
+            sl_pct: Stop-loss percentage (default 2%)
+            market_id: Market ID
+            
+        Returns:
+            (success, oco_info_dict)
+        """
+        try:
+            # 1. Open main position first
+            position = await self.place_market_order(side, size, market_id=market_id)
+            
+            if not position:
+                logger.error("Failed to open position, skipping OCO setup")
+                return False, None
+            
+            logger.info(f"✅ Position opened: {size:.4f} @ ${entry_price:.2f}")
+            
+            # 2. Add to local position tracking (for immediate OCO calculation)
+            self.local_positions.append({
+                'size': size if side == "buy" else -size,  # Positive for long, negative for short
+                'entry_price': entry_price,
+                'side': side,
+                'opened_at': datetime.now()
+            })
+            
+            # 3. Update portfolio-level OCO using local positions
+            oco_success = await self.update_portfolio_oco(market_id=market_id, use_local=True)
+            
+            if not oco_success:
+                logger.warning("⚠️ Portfolio OCO update failed - bot will manage exits")
+                return True, None
+            
+            # 3. Return info about portfolio OCO
+            oco_info = {
+                'tp_price': self.portfolio_oco_ids.get('tp_price', 0),
+                'sl_price': self.portfolio_oco_ids.get('sl_price', 0),
+                'entry_price': self.portfolio_oco_ids.get('avg_entry', entry_price),
+                'size': self.portfolio_oco_ids.get('total_size', size),
+                'side': side,
+                'created_at': datetime.now(),
+                'portfolio_level': True  # Flag to indicate this is portfolio OCO
+            }
+            
+            return True, oco_info
+            
+        except Exception as e:
+            logger.error(f"Error in place_position_with_oco: {e}")
+            return False, None
+    
+    async def cancel_oco_tp(self, position_id: str) -> bool:
+        """Cancel TP from OCO (bot taking over with trailing)"""
+        try:
+            if position_id not in self.oco_orders:
+                return False
+            
+            oco_info = self.oco_orders[position_id]
+            tp_order_id = oco_info['tp_order_id']
+            
+            client = await get_client()
+            result, tx_hash, error = await client.cancel_order(
+                market_index=self.market_id,
+                order_index=tp_order_id
+            )
+            
+            if error:
+                logger.error(f"Failed to cancel TP #{tp_order_id}: {error}")
+                return False
+                
+            logger.info(f"🔄 Cancelled OCO TP #{tp_order_id} - Bot trailing active")
+            self.trailing_active[position_id] = True
+            return True
+                
+        except Exception as e:
+            logger.error(f"Error cancelling OCO TP: {e}")
+            return False
+    
+    async def cancel_oco_sl(self, position_id: str) -> bool:
+        """Cancel SL from OCO (when bot closes early)"""
+        try:
+            if position_id not in self.oco_orders:
+                return True
+            
+            oco_info = self.oco_orders[position_id]
+            sl_order_id = oco_info['sl_order_id']
+            
+            client = await get_client()
+            result, tx_hash, error = await client.cancel_order(
+                market_index=self.market_id,
+                order_index=sl_order_id
+            )
+            
+            if not error:
+                logger.info(f"✅ Cancelled OCO SL #{sl_order_id}")
+            return True
+                
+        except Exception as e:
+            logger.error(f"Error cancelling OCO SL: {e}")
+            return False
+    
+    async def cleanup_oco(self, position_id: str):
+        """Remove OCO tracking after position closes"""
+        if position_id in self.oco_orders:
+            del self.oco_orders[position_id]
+        if position_id in self.trailing_active:
+            del self.trailing_active[position_id]
+    
+    async def update_portfolio_oco(self, market_id: Optional[int] = None, use_local: bool = False) -> bool:
+        """
+        PORTFOLIO-LEVEL OCO: Cancel old OCO, calculate avg entry, create new OCO
+        
+        This solves the problem of multiple positions with different entry prices.
+        Instead of separate TP/SL for each position, we create ONE OCO based on
+        the AVERAGE entry price of all positions.
+        
+        Args:
+            market_id: Market ID
+            use_local: Use locally tracked positions instead of API (for immediate updates)
+        
+        Returns:
+            True if OCO created/updated successfully
+        """
+        try:
+            logger.info(f"🔧 update_portfolio_oco() called with use_local={use_local}")
+            
+            client = await get_client()
+            m_id = market_id if market_id is not None else self.market_id
+            
+            # 1. Get positions (local or from API)
+            if use_local and len(self.local_positions) > 0:
+                # Use locally tracked positions (immediate after opening)
+                positions_data = self.local_positions
+                logger.info(f"📊 Using {len(positions_data)} local positions for OCO")
+            else:
+                # Get from API
+                positions = await client.get_positions()
+                if not positions or len(positions) == 0:
+                    logger.info("No positions, no OCO needed")
+                    # Cancel existing portfolio OCO if any
+                    if self.portfolio_oco_active:
+                        await self._cancel_portfolio_oco()
+                    return True
+                
+                # Convert API positions to our format
+                positions_data = [
+                    {
+                        'size': pos.size,
+                        'entry_price': pos.entry_price,
+                        'side': 'long' if pos.size > 0 else 'short'
+                    }
+                    for pos in positions
+                ]
+            
+            # 2. Calculate NET position (longs - shorts) and weighted average entry
+            total_value_long = 0.0
+            total_size_long = 0.0
+            total_value_short = 0.0
+            total_size_short = 0.0
+            
+            for pos in positions_data:
+                size = pos['size'] if isinstance(pos['size'], (int, float)) else pos.get('size', 0)
+                entry_price = pos['entry_price'] if isinstance(pos.get('entry_price'), (int, float)) else pos.get('entry_price', 0)
+                
+                if size > 0:  # LONG
+                    total_value_long += size * entry_price
+                    total_size_long += size
+                else:  # SHORT
+                    total_value_short += abs(size) * entry_price
+                    total_size_short += abs(size)
+            
+            # Calculate net position
+            net_size = total_size_long - total_size_short
+            
+            if abs(net_size) < 0.001:  # No net position
+                logger.warning("Net position size is ~0, skipping OCO")
+                return False
+            
+            # Determine side and calculate weighted average
+            if net_size > 0:  # Net LONG
+                position_side = "long"
+                avg_entry_price = total_value_long / total_size_long if total_size_long > 0 else 0
+                total_size = net_size
+            else:  # Net SHORT
+                position_side = "short"
+                avg_entry_price = total_value_short / total_size_short if total_size_short > 0 else 0
+                total_size = abs(net_size)
+            
+            logger.info(f"📊 Portfolio OCO: {len(positions_data)} positions, NET {position_side.upper()} {total_size:.4f}, avg entry=${avg_entry_price:.2f}")
+            
+            # 3. Calculate TP/SL based on average entry
+            leverage = settings.leverage
+            tp_pct = 2.0  # +2% PnL
+            sl_pct = 2.0  # -2% PnL
+            
+            price_move_tp = tp_pct / leverage  # 2% PnL = 0.4% price with 5x
+            price_move_sl = sl_pct / leverage
+            
+            if position_side == "long":
+                tp_price = avg_entry_price * (1 + price_move_tp / 100)
+                sl_price = avg_entry_price * (1 - price_move_sl / 100)
+                is_ask = True  # Exit long = SELL
+            else:
+                tp_price = avg_entry_price * (1 - price_move_tp / 100)
+                sl_price = avg_entry_price * (1 + price_move_sl / 100)
+                is_ask = False  # Exit short = BUY
+            
+            logger.info(f"📍 Portfolio OCO: Avg Entry=${avg_entry_price:.2f} | TP=${tp_price:.2f} (+{tp_pct}%) | SL=${sl_price:.2f} (-{sl_pct}%)")
+            
+            # 4. Cancel existing portfolio OCO if any
+            if self.portfolio_oco_active:
+                await self._cancel_portfolio_oco()
+            
+            # 5. Convert to exchange format
+            base_amount = market_metadata.to_base_amount(total_size, m_id)
+            tp_price_int = market_metadata.to_price_int(tp_price, m_id)
+            sl_price_int = market_metadata.to_price_int(sl_price, m_id)
+            
+            # 6. Create new portfolio OCO (must use client_order_index=0 for OCO)
+            logger.info(f"📤 Creating OCO orders: TP={tp_price_int}, SL={sl_price_int}, base={base_amount}, is_ask={is_ask}")
+            
+            create_order_obj, tx_hash_obj, error_str = await client.create_oco_orders(
+                market_index=m_id,
+                client_order_index_tp=0,  # API requires 0 (nil) for OCO orders
+                client_order_index_sl=0,  # API requires 0 (nil) for OCO orders
+                base_amount=base_amount,
+                tp_price=tp_price_int,
+                sl_price=sl_price_int,
+                tp_trigger=tp_price_int,
+                sl_trigger=sl_price_int,
+                is_ask=is_ask,
+                reduce_only=True
+            )
+            
+            logger.info(f"📥 OCO API Response: create_order={create_order_obj}, tx_hash={tx_hash_obj}, error={error_str}")
+            
+            if error_str:
+                logger.error(f"❌ Portfolio OCO creation failed: {error_str}")
+                return False
+            
+            # 7. Track portfolio OCO
+            self.portfolio_oco_active = True
+            self.portfolio_oco_ids = {
+                'tp_price': tp_price,
+                'sl_price': sl_price,
+                'avg_entry': avg_entry_price,
+                'total_size': total_size
+            }
+            
+            logger.info(f"✅ Portfolio OCO Active: TP @ ${tp_price:.2f}, SL @ ${sl_price:.2f} for {total_size:.4f} size")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating portfolio OCO: {e}")
+            return False
+    
+    async def _cancel_portfolio_oco(self) -> bool:
+        """Cancel ALL existing orders (including portfolio OCO)"""
+        try:
+            if not self.portfolio_oco_active:
+                return True
+            
+            logger.info(f"🗑️ Cancelling all orders before creating new OCO")
+            success = await self.cancel_all_orders()
+            
+            self.portfolio_oco_active = False
+            self.portfolio_oco_ids = {}
+            
+            if success:
+                logger.info("✅ All orders cancelled successfully")
+            else:
+                logger.warning("⚠️ Some orders may not have been cancelled")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error cancelling portfolio OCO: {e}")
+            return False
     
     async def cancel_order(self, order_index: int, market_id: Optional[int] = None) -> bool:
         """Cancel a specific order"""
@@ -494,12 +844,27 @@ class OrderManager:
             return False
     
     async def get_account_info(self) -> Dict[str, Any]:
-        """Get account balance and margin info"""
+        """Get account balance and margin info with 60-second caching"""
         try:
+            # Check cache (60 seconds)
+            now = datetime.now()
+            if self.account_info_cache and (now - self.account_info_cache_time).total_seconds() < 60:
+                return self.account_info_cache
+            
+            # Fetch fresh data
             client = await get_client()
             account_info = await client.get_account_info()
-            logger.debug(f"Account info: {account_info}")
+            
+            # Update cache
+            self.account_info_cache = account_info
+            self.account_info_cache_time = now
+            
+            logger.debug(f"Account info: {account_info} (cached for 60s)")
             return account_info
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
+            # Return cached data on error if available
+            if self.account_info_cache:
+                logger.warning("Using cached account info due to API error")
+                return self.account_info_cache
             return {}

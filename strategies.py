@@ -15,6 +15,59 @@ from config import settings
 from logger import logger
 
 
+
+class MarketDataWrapper:
+    """Wrapper to provide synchronous interface for strategies from async MarketData object"""
+    
+    def __init__(self, market_data_obj=None):
+        """Initialize with MarketData object"""
+        self.market_data_obj = market_data_obj
+        self.price = 0.0
+        self.bid = 0.0
+        self.ask = 0.0
+        self.timestamp = datetime.now()
+        self.price_history = []
+        self.high_history = []
+        self.low_history = []
+        self.volume_history = []
+        self.candles = []  # Store OHLCV candles for pattern analysis
+    
+    async def fetch_latest_data(self):
+        """Fetch latest market data from async methods"""
+        if self.market_data_obj:
+            try:
+                # Fetch current price and bid/ask
+                self.bid, self.ask = await self.market_data_obj.get_best_bid_ask()
+                self.price = (self.bid + self.ask) / 2.0 if self.bid > 0 and self.ask > 0 else 0.0
+                self.timestamp = datetime.now()
+                
+                # Fetch candlestick data (50 candles, 5min resolution for pattern detection)
+                if hasattr(self.market_data_obj, 'get_candlesticks'):
+                    try:
+                        candles_data = await self.market_data_obj.get_candlesticks(
+                            market_id=settings.trading_market_id,
+                            resolution='5m',  # 5-minute candles (valid: 1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d, 1w)
+                            limit=50
+                        )
+                        if candles_data:
+                            self.candles = candles_data
+                    except Exception as e:
+                        logger.debug(f"Could not fetch candles: {e}")
+                
+                # Fetch historical data if methods exist
+                if hasattr(self.market_data_obj, 'price_history'):
+                    self.price_history = getattr(self.market_data_obj, 'price_history', [])
+                if hasattr(self.market_data_obj, 'high_history'):
+                    self.high_history = getattr(self.market_data_obj, 'high_history', [])
+                if hasattr(self.market_data_obj, 'low_history'):
+                    self.low_history = getattr(self.market_data_obj, 'low_history', [])
+                if hasattr(self.market_data_obj, 'volume_history'):
+                    self.volume_history = getattr(self.market_data_obj, 'volume_history', [])
+            except Exception as e:
+                logger.error(f"Error fetching market data: {e}")
+
+
+
 class SignalType(Enum):
     """Trading signal types"""
     BUY = "buy"
@@ -59,7 +112,7 @@ class BaseStrategy(ABC):
         self.min_signal_strength = 0.6
     
     @abstractmethod
-    async def analyze(self, market_data: MarketData) -> Optional[Signal]:
+    async def analyze(self, market_data: MarketDataWrapper) -> Optional[Signal]:
         """
         Analyze market data and generate trading signal
         
@@ -92,11 +145,21 @@ class MomentumStrategy(BaseStrategy):
         self.ema_fast = 12
         self.ema_slow = 26
     
-    async def analyze(self, market_data: MarketData) -> Optional[Signal]:
+    async def analyze(self, market_data: MarketDataWrapper) -> Optional[Signal]:
         """Analyze momentum indicators"""
         
         if len(market_data.price_history) < self.ema_slow:
             return None
+        
+        # VOLATILITY FILTER: Check if market too choppy
+        if (len(market_data.high_history) >= 15 and len(market_data.low_history) >= 15 and
+            TechnicalIndicators.is_high_volatility(
+                market_data.price_history, 
+                market_data.high_history, 
+                market_data.low_history, 
+                threshold=0.04
+            )):
+            return None  # Skip momentum trading in extreme volatility
         
         # Calculate indicators
         rsi = TechnicalIndicators.rsi(market_data.price_history)
@@ -158,7 +221,7 @@ class MeanReversionStrategy(BaseStrategy):
         self.bb_std = 2.0
         self.rsi_period = 14
     
-    async def analyze(self, market_data: MarketData) -> Optional[Signal]:
+    async def analyze(self, market_data: MarketDataWrapper) -> Optional[Signal]:
         """Analyze mean reversion indicators"""
         
         if len(market_data.price_history) < self.bb_period:
@@ -229,7 +292,7 @@ class MarketMakingStrategy(BaseStrategy):
         self.inventory_skew_factor = 0.1
         self.volatility_multiplier = 2.0
     
-    async def analyze(self, market_data: MarketData) -> Optional[Signal]:
+    async def analyze(self, market_data: MarketDataWrapper) -> Optional[Signal]:
         """
         Generate market making orders
         
@@ -280,7 +343,7 @@ class GridTradingStrategy(BaseStrategy):
         self.grid_spacing_pct = 0.5  # 0.5% between levels
         self.min_price_move = 0.002  # 0.2% minimum move to trigger
     
-    async def analyze(self, market_data: MarketData) -> Optional[Signal]:
+    async def analyze(self, market_data: MarketDataWrapper) -> Optional[Signal]:
         """Analyze grid trading opportunities"""
         
         if len(market_data.price_history) < 2:
@@ -325,6 +388,127 @@ class GridTradingStrategy(BaseStrategy):
         return None
 
 
+class CandlestickStrategy(BaseStrategy):
+    """
+    Candlestick Pattern Strategy
+    
+    Analyzes:
+    - Bullish patterns (Hammer, Engulfing, Morning Star, Three White Soldiers)
+    - Bearish patterns (Shooting Star, Bearish Engulfing, Evening Star, Three Black Crows)
+    - Trend confirmation (EMA alignment)
+    - Volume confirmation
+    """
+    
+    def __init__(self):
+        super().__init__("Candlestick")
+    
+    async def analyze(self, market_data: Dict, position_info: Optional[Dict] = None) -> Optional[Signal]:
+        """Analyze candlestick patterns with trend and volume confirmation"""
+        try:
+            # Extract OHLCV data
+            if not hasattr(market_data, 'candles') or len(market_data.candles) < 20:
+                return None
+            
+            candles = market_data.candles
+            opens = [c['open'] for c in candles]
+            highs = [c['high'] for c in candles]
+            lows = [c['low'] for c in candles]
+            closes = [c['close'] for c in candles]
+            volumes = [c['volume'] for c in candles] if 'volume' in candles[0] else None
+            
+            current_price = closes[-1]
+            
+            # VOLATILITY FILTER: Skip if market too choppy (prevents whipsaw losses)
+            if TechnicalIndicators.is_high_volatility(closes, highs, lows, threshold=0.04):
+                return None  # Skip trading in extreme volatility
+            
+            # Detect candlestick patterns
+            patterns = TechnicalIndicators.detect_candlestick_patterns(opens, highs, lows, closes)
+            
+            if not patterns:
+                return None
+            
+            # Calculate trend indicators for confirmation
+            ema_20 = TechnicalIndicators.ema(closes, 20)
+            ema_50 = TechnicalIndicators.ema(closes, 50)
+            rsi = TechnicalIndicators.rsi(closes, 14)
+            
+            # Volume confirmation (if available)
+            volume_surge = False
+            if volumes and len(volumes) >= 10:
+                avg_volume = sum(volumes[-10:-1]) / 9
+                current_volume = volumes[-1]
+                volume_surge = current_volume > avg_volume * 1.3
+            
+            # Check for BULLISH patterns
+            bullish_patterns = ['hammer', 'bullish_engulfing', 'morning_star', 'three_white_soldiers']
+            for pattern in bullish_patterns:
+                if pattern in patterns:
+                    pattern_confidence = patterns[pattern]
+                    
+                    # Trend confirmation: price above EMA20, EMA20 > EMA50 (uptrend)
+                    trend_aligned = current_price > ema_20 and ema_20 > ema_50
+                    
+                    # RSI not overbought
+                    rsi_ok = rsi < 70
+                    
+                    # Calculate final confidence
+                    confidence = pattern_confidence * 0.6  # Base from pattern
+                    if trend_aligned:
+                        confidence += 0.2  # Trend bonus
+                    if volume_surge:
+                        confidence += 0.1  # Volume bonus
+                    if rsi_ok:
+                        confidence += 0.1  # RSI bonus
+                    
+                    # Only signal if confidence >= 0.55 (strict threshold)
+                    if confidence >= 0.55:
+                        return Signal(
+                            signal_type=SignalType.BUY,
+                            strength=confidence,
+                            price=current_price,
+                            reason=f"🕯️ {pattern.replace('_', ' ').title()} + Trend (EMA20>{ema_20:.0f}, RSI={rsi:.0f})",
+                            timestamp=datetime.now()
+                        )
+            
+            # Check for BEARISH patterns
+            bearish_patterns = ['shooting_star', 'bearish_engulfing', 'evening_star', 'three_black_crows']
+            for pattern in bearish_patterns:
+                if pattern in patterns:
+                    pattern_confidence = patterns[pattern]
+                    
+                    # Trend confirmation: price below EMA20, EMA20 < EMA50 (downtrend)
+                    trend_aligned = current_price < ema_20 and ema_20 < ema_50
+                    
+                    # RSI not oversold
+                    rsi_ok = rsi > 30
+                    
+                    # Calculate final confidence
+                    confidence = pattern_confidence * 0.6  # Base from pattern
+                    if trend_aligned:
+                        confidence += 0.2  # Trend bonus
+                    if volume_surge:
+                        confidence += 0.1  # Volume bonus
+                    if rsi_ok:
+                        confidence += 0.1  # RSI bonus
+                    
+                    # Only signal if confidence >= 0.55 (strict threshold)
+                    if confidence >= 0.55:
+                        return Signal(
+                            signal_type=SignalType.SELL,
+                            strength=confidence,
+                            price=current_price,
+                            reason=f"🕯️ {pattern.replace('_', ' ').title()} + Trend (EMA20<{ema_20:.0f}, RSI={rsi:.0f})",
+                            timestamp=datetime.now()
+                        )
+            
+            return None
+        
+        except Exception as e:
+            logger.error(f"Candlestick strategy error: {e}")
+            return None
+
+
 class StrategyManager:
     """Manages multiple trading strategies"""
     
@@ -337,7 +521,7 @@ class StrategyManager:
         self.strategies.append(strategy)
         logger.info(f"Added strategy: {strategy.name}")
     
-    async def analyze_market(self, market_data: MarketData) -> List[Signal]:
+    async def analyze_market(self, market_data: MarketDataWrapper) -> List[Signal]:
         """
         Run all strategies and collect signals
         
@@ -495,21 +679,20 @@ class SentimentStrategy(BaseStrategy):
             if not signal:
                 return None
             
-            # Convert sentiment to trading signal
-            # Note: Sentiment is a longer-term signal, so we use lower strength
-            if signal.sentiment == "bullish" and signal.confidence >= 0.6:
+            # Convert sentiment to trading signal (STRICT: 0.55 minimum to reduce overtrading)
+            if signal.sentiment == "bullish" and signal.confidence >= 0.55:  # Higher quality threshold
                 return Signal(
                     signal_type=SignalType.BUY,
-                    strength=signal.confidence * 0.7,  # Reduce weight slightly
+                    strength=signal.confidence * 0.9,  # Higher weight for aggressive trading
                     price=current_price,
                     reason=f"Sentiment: {signal.reason} (score={signal.score:.2f})",
                     timestamp=datetime.now()
                 )
             
-            elif signal.sentiment == "bearish" and signal.confidence >= 0.6:
+            elif signal.sentiment == "bearish" and signal.confidence >= 0.55:  # Higher quality threshold
                 return Signal(
                     signal_type=SignalType.SELL,
-                    strength=signal.confidence * 0.7,  # Reduce weight slightly
+                    strength=signal.confidence * 0.9,  # Higher weight for aggressive trading
                     price=current_price,
                     reason=f"Sentiment: {signal.reason} (score={signal.score:.2f})",
                     timestamp=datetime.now()

@@ -1,30 +1,39 @@
 """
-Advanced Trading Bot with Multiple Strategies
+Advanced Trading Bot with Multiple Strategies + Institutional Features
 """
 import asyncio
 import signal
 import sys
 from typing import Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
+from asyncio import Lock
 from config import settings
 from market_data import MarketData
 from order_manager import OrderManager
 from risk_manager import AdvancedRiskManager, Position
 from strategies import (
     StrategyManager, MomentumStrategy, MeanReversionStrategy,
-    MarketMakingStrategy, GridTradingStrategy, OrderFlowStrategy,
-    SentimentStrategy, MarketData as StrategyMarketData,
+    OrderFlowStrategy, CandlestickStrategy, MarketDataWrapper,
     Signal, SignalType
 )
 from logger import get_logger, get_alert_manager
 from lighter_client import close_client, get_client
 from utils import resolve_market_metadata, market_metadata
-from trailing_stops import trailing_stop_manager
 from indicators import TechnicalIndicators
 from metrics import bot_metrics
-from win_rate_optimizer import win_rate_optimizer, TradeQuality
 from win_rate_tracker import win_rate_tracker
-from profit_manager import profit_manager
+
+# INSTITUTIONAL FEATURES
+from strategy_performance import strategy_tracker
+from drawdown_protection import drawdown_protection
+from time_filter import is_trading_hours, get_trading_session
+from multi_timeframe import mtf_analyzer
+from institutional_pipeline import institutional_pipeline
+from hybrid_exit_manager import get_hybrid_exit_manager
+from indicators import TechnicalIndicators
+from metrics import bot_metrics
+from win_rate_tracker import win_rate_tracker
+from vwap_filter import vwap_filter  # Institution-grade entry filter
 
 
 class AdvancedTradingBot:
@@ -46,9 +55,15 @@ class AdvancedTradingBot:
         # Initialize components
         self.logger.info("Initializing Advanced Trading Bot...")
         
+        # Lock to prevent concurrent position openings
+        self.position_opening_lock = Lock()
+        
         self.market_data = MarketData()
         self.order_manager = OrderManager()
         self.risk_manager = AdvancedRiskManager(self.order_manager, self.market_data)
+        
+        # Hybrid exit manager for OCO + Bot management
+        self.hybrid_exit_manager = get_hybrid_exit_manager(self.order_manager)
         
         # Start Prometheus metrics server
         bot_metrics.start_server()
@@ -58,42 +73,48 @@ class AdvancedTradingBot:
             "environment": settings.environment
         })
         
-        # Initialize strategy manager
+        # Initialize strategy manager with ALL institutional strategies
         self.strategy_manager = StrategyManager()
         
-        # Add strategies based on configuration
+        # MULTI-STRATEGY CONSENSUS for "no loss" trading
         if settings.enable_momentum_strategy:
             self.strategy_manager.add_strategy(MomentumStrategy())
-            self.logger.info("✓ Enabled: Momentum Strategy")
+            self.logger.info("✓ Momentum Strategy (trend following)")
         
         if settings.enable_mean_reversion_strategy:
             self.strategy_manager.add_strategy(MeanReversionStrategy())
-            self.logger.info("✓ Enabled: Mean Reversion Strategy")
-        
-        if settings.enable_market_making_strategy:
-            self.strategy_manager.add_strategy(MarketMakingStrategy())
-            self.logger.info("✓ Enabled: Market Making Strategy")
-        
-        if settings.enable_grid_trading_strategy:
-            self.strategy_manager.add_strategy(GridTradingStrategy())
-            self.logger.info("✓ Enabled: Grid Trading Strategy")
+            self.logger.info("✓ Mean Reversion Strategy (oversold/overbought)")
         
         if settings.enable_orderflow_strategy:
             self.strategy_manager.add_strategy(OrderFlowStrategy())
-            self.logger.info("✓ Enabled: Order Flow Strategy")
+            self.logger.info("✓ Order Flow Strategy (institutional money flow)")
         
-        if settings.enable_sentiment_strategy:
-            # Extract symbol from trading symbol (e.g., "BTC-PERP" -> "BTC")
-            symbol = settings.trading_symbol.split('-')[0]
-            self.strategy_manager.add_strategy(SentimentStrategy(symbol))
-            self.logger.info(f"✓ Enabled: Sentiment Strategy ({symbol})")
-
-        # self.strategy_manager.add_strategy(GridTradingStrategy())   # Uncomment for grid trading
+        # Always enable Candlestick (pattern confirmation)
+        self.strategy_manager.add_strategy(CandlestickStrategy())
+        self.logger.info("✓ Candlestick Strategy (pattern recognition)")
+        
+        self.logger.info(f"📊 MULTI-STRATEGY MODE: {len(self.strategy_manager.strategies)} strategies for maximum accuracy")
         
         # Bot state
         self.running = False
-        self.last_risk_check = datetime.now()
+        self.last_risk_check = datetime.now() - timedelta(seconds=35)  # Ensure immediate first check
         self.last_strategy_run = datetime.now()
+        
+        # ADAPTIVE MONITORING: 1s when positions open (fast TP/SL), 5s when idle
+        self.has_open_positions = False
+        self.position_cache = []
+        self.last_position_fetch = datetime.now() - timedelta(seconds=100)
+        
+        # TRAILING STOP: Track highest PnL for each position (institutions protect profits)
+        self.position_highest_pnl = {}  # {position_id: highest_pnl_pct}
+        
+        # SMART REJECTION: Track failed trades to avoid repeating mistakes
+        self.recent_losses = []  # Track last 5 losing trades
+        self.last_loss_time = None
+        self.consecutive_losses = 0
+        
+        # Track recently closed positions to avoid duplicate closes
+        self.recently_closed_positions: set = set()
         
         # Price history for technical analysis
         self.price_history = []
@@ -125,6 +146,9 @@ class AdvancedTradingBot:
             self.low_history.append(best_bid)
             self.volume_history.append(0)  # Volume would come from exchange
             
+            # Update VWAP filter for institution-grade entries
+            vwap_filter.update_vwap(mid_price, 1.0)  # Use placeholder volume
+            
             # Feed data to ML predictor
             try:
                 from ml_predictor import ml_predictor
@@ -150,7 +174,7 @@ class AdvancedTradingBot:
     
     async def execute_signal(self, signal: Signal) -> bool:
         """
-        Execute a trading signal
+        Execute a trading signal with INSTITUTIONAL FILTERS
         
         Args:
             signal: Trading signal from strategy
@@ -159,8 +183,42 @@ class AdvancedTradingBot:
             True if order was executed
         """
         try:
-            # Determine order parameters
-            size = settings.min_order_size * signal.strength  # Scale size by signal strength
+            # INSTITUTION TRICK #5: Don't trade after 2+ consecutive losses (wait for calm)
+            if self.consecutive_losses >= 2:
+                time_since_loss = (datetime.now() - self.last_loss_time).total_seconds() if self.last_loss_time else 999
+                if time_since_loss < 180:  # Wait 3 minutes after 2 losses
+                    self.logger.warning(f"⏸️ PAUSE: {self.consecutive_losses} consecutive losses. Waiting {180-time_since_loss:.0f}s before next trade")
+                    return False
+            
+            # ========================================
+            # VWAP ENTRY FILTER (Institution Grade)
+            # ========================================
+            signal_direction = "long" if signal.signal_type == SignalType.BUY else "short"
+            approved, reason = vwap_filter.should_enter_trade(signal.price, signal_direction)
+            if not approved:
+                self.logger.warning(f"🚫 VWAP Filter: {reason}")
+                return False
+            
+            # ========================================
+            # INSTITUTIONAL FILTER PIPELINE
+            # ========================================
+            approved, reason, adjustments = await institutional_pipeline.should_execute_trade(
+                signal=signal,
+                market_data=self.market_data
+            )
+            
+            if not approved:
+                self.logger.info(f"Trade rejected: {reason}")
+                return False
+            
+            # Apply confidence boost from multi-timeframe
+            original_strength = signal.strength
+            signal.strength = min(1.0, signal.strength + adjustments['confidence_boost'])
+            
+            if adjustments['confidence_boost'] > 0:
+                self.logger.info(
+                    f"📊 Multi-TF boost: {original_strength:.2f} → {signal.strength:.2f}"
+                )
             
             # Calculate stop-loss price using settings
             stop_loss_pct = settings.stop_loss_percent / 100.0  # Convert percentage to decimal
@@ -169,12 +227,13 @@ class AdvancedTradingBot:
             else:
                 stop_loss_price = signal.price * (1 + stop_loss_pct)
             
-            # Risk check with position sizing
+            # Risk check with position sizing (risk manager calculates size based on account balance)
+            # Pass 0.0 as initial size so risk manager calculates optimal size
             approved, reason, adjusted_size = await self.risk_manager.check_order_risk(
                 side="buy" if signal.signal_type == SignalType.BUY else "sell",
-                size=size,
+                size=0.0,  # Let risk manager calculate size based on position_size_percent
                 price=signal.price,
-                market_id=settings.trading_market_id,
+                market_id=self.market_data.market_id,  # Use current market_id from market_data
                 stop_loss=stop_loss_price
             )
             
@@ -182,20 +241,86 @@ class AdvancedTradingBot:
                 self.logger.warning(f"Order rejected by risk manager: {reason}")
                 return False
             
-            # Place order
+            # Apply drawdown protection size multiplier
+            adjusted_size = adjusted_size * adjustments['size_multiplier']
+            
+            if adjustments['size_multiplier'] < 1.0:
+                self.logger.warning(
+                    f"⚠️ Size reduced to {adjustments['size_multiplier']*100:.0f}%: {adjusted_size:.4f}"
+                )
+            
+            # Place order WITH HYBRID OCO PROTECTION
             side = "buy" if signal.signal_type == SignalType.BUY else "sell"
             
-            self.logger.info(f"Executing {side.upper()} order: size={adjusted_size:.4f} @ ${signal.price:.2f}")
-            self.logger.info(f"Reason: {signal.reason}")
+            # ========================================
+            # HYBRID OCO STRATEGY (Exchange + Bot)
+            # ========================================
+            # Exchange handles basic TP/SL (instant, 0ms, survives crashes)
+            # Bot can intervene for trailing stops and early exits
             
-            order = await self.order_manager.place_market_order(
-                side=side,
-                size=adjusted_size,
-                market_id=settings.trading_market_id
-            )
+            # 🔒 LOCK to prevent concurrent position openings (max 3 positions)
+            async with self.position_opening_lock:
+                self.logger.info(f"🔒 Acquired position opening lock")
+                
+                # Re-check position count inside lock using LOCAL count (no API lag)
+                current_position_count = len(self.order_manager.local_positions)
+                
+                if current_position_count >= settings.max_open_positions:
+                    self.logger.warning(f"🛑 STRICT LIMIT: Already have {current_position_count}/{settings.max_open_positions} positions - BLOCKED")
+                    return False
+                
+                self.logger.info(f"✅ Position check: {current_position_count}/{settings.max_open_positions} - proceeding")
+                self.logger.info(f"Executing {side.upper()} order: size={adjusted_size:.4f} @ ${signal.price:.2f}")
+                self.logger.info(f"Reason: {signal.reason}")
+                
+                success, oco_info = await self.order_manager.place_position_with_oco(
+                    side=side,
+                    size=adjusted_size,
+                    entry_price=signal.price,
+                    tp_pct=2.0,  # +2% TP
+                    sl_pct=2.0,  # -2% SL
+                    market_id=self.market_data.market_id
+                )
+                
+                if not success:
+                    self.logger.error(f"Failed to execute trade")
+                    return False
+                
+                if oco_info:
+                    self.logger.info(f"🎯 Position opened with OCO protection")
+                    self.logger.info(f"   TP @ ${oco_info['tp_price']:.2f} (+2%) - Exchange managed")
+                    self.logger.info(f"   SL @ ${oco_info['sl_price']:.2f} (-2%) - Exchange managed")
+                    self.logger.info(f"   Bot monitors for trailing/early exit opportunities")
+                else:
+                    self.logger.warning(f"⚠️ Position opened WITHOUT OCO - Bot managing all exits")
+                
+                # Update position tracking
+                self.has_open_positions = True
+                
+                order = True  # Success flag for downstream logic
             
             if order:
                 self.trade_count += 1
+                
+                # Set flag for ADAPTIVE MONITORING: 1-second checks when positions open
+                self.has_open_positions = True
+                
+                # REGISTER TRADE for early exit detection
+                try:
+                    direction = 'long' if side == 'buy' else 'short'
+                    trade_id = f"{settings.trading_symbol}_{self.trade_count}"
+                    
+                    self.risk_manager.trade_validator.register_trade(
+                        trade_id=trade_id,
+                        entry_price=signal.price,
+                        direction=direction,
+                        reason=signal.reason,
+                        confidence=signal.strength,
+                        market_data=None  # Will fetch during monitoring
+                    )
+                    self.logger.info(f"📋 Trade registered for early exit detection: {trade_id}")
+                except Exception as e:
+                    self.logger.error(f"Error registering trade: {e}")
                 
                 # Record metrics
                 bot_metrics.record_trade(
@@ -218,268 +343,293 @@ class AdvancedTradingBot:
     
     async def run_strategies(self):
         """
-        Run HIGH WIN RATE strategy analysis (Target: 80%+)
+        🎯 MULTI-MODE TRADING STRATEGY EXECUTION
+        =======================================
         
-        Uses win_rate_optimizer with:
-        - Multi-timeframe confirmation (5m, 15m, 1h, 4h) via SDK candlesticks()
-        - Market regime detection
-        - Volume analysis via SDK recent_trades()
-        - Funding rate analysis via SDK fundings()
-        - Order book imbalance via SDK order_book_details()
-        - Risk/Reward filtering (minimum 2:1)
-        
-        Only trades EXCELLENT quality setups (80%+ confidence)
+        Supports three modes:
+        1. MULTI-TOP-3: Focus on ETH/BTC/SOL for 2% quick exits
+        2. SINGLE-MARKET: Traditional single token trading
         """
         try:
-            # Check if we already have a position - don't pyramid
-            position = await self.order_manager.get_position(settings.trading_market_id)
+            # MODE 1: TOP 3 HIGH-VOLUME (2% QUICK EXIT)
+            if settings.trading_symbol == "MULTI-TOP-3":
+                await self._run_top3_strategy()
             
-            if position and position.is_open:
-                self.logger.info(f"Position already open ({position.symbol}), waiting for exit...")
-                return
-            
-            # Get current price
-            current_price = self.price_history[-1] if len(self.price_history) > 0 else 0
-            if current_price == 0:
-                self.logger.debug("No price data available")
-                return
-            
-            # Use win rate optimizer to find EXCELLENT setup
-            self.logger.info("="*60)
-            self.logger.info("🎯 Analyzing market for HIGH PROBABILITY setup...")
-            self.logger.info(f"Current price: ${current_price:.2f}")
-            
-            trade_setup = await win_rate_optimizer.get_best_trade_setup(
-                market_id=settings.trading_market_id,
-                current_price=current_price
-            )
-            
-            if not trade_setup:
-                self.logger.info("❌ No EXCELLENT quality setup found. Waiting for better opportunity...")
-                self.logger.info("="*60)
-                return
-            
-            # Found EXCELLENT setup!
-            self.logger.info("")
-            self.logger.info("✅ EXCELLENT SETUP FOUND!")
-            self.logger.info(f"Direction: {trade_setup.direction.upper()}")
-            self.logger.info(f"Quality: {trade_setup.quality.value}")
-            self.logger.info(f"Confidence: {trade_setup.confidence:.1%} (expected win rate)")
-            self.logger.info(f"Entry: ${trade_setup.entry_price:.2f}")
-            self.logger.info(f"Stop Loss: ${trade_setup.stop_loss:.2f}")
-            self.logger.info(f"Take Profit: ${trade_setup.take_profit:.2f}")
-            self.logger.info(f"Risk/Reward: {trade_setup.risk_reward_ratio:.2f}:1")
-            self.logger.info("")
-            self.logger.info("Reasons:")
-            for reason in trade_setup.reasons:
-                self.logger.info(f"  ✓ {reason}")
-            
-            if trade_setup.warnings:
-                self.logger.info("Warnings:")
-                for warning in trade_setup.warnings:
-                    self.logger.info(f"  ⚠ {warning}")
-            
-            self.logger.info("="*60)
-            
-            # Execute the trade
-            side = "buy" if trade_setup.direction == "long" else "sell"
-            
-            # Get current account balance
-            try:
-                account_info = await self.order_manager.get_account_info()
-                if isinstance(account_info, dict):
-                    if 'accounts' in account_info and len(account_info['accounts']) > 0:
-                        account_balance = float(account_info['accounts'][0].get('collateral', 0))
-                    else:
-                        account_balance = float(account_info.get('collateral', 0))
-                else:
-                    self.logger.error("Could not get account balance for position sizing")
-                    return
-            except Exception as e:
-                self.logger.error(f"Error fetching account balance: {e}")
-                return
-            
-            # Calculate position size using risk manager (percentage-based)
-            risk_amount = await self.risk_manager.calculate_position_size(
-                account_balance=account_balance,
-                entry_price=trade_setup.entry_price,
-                stop_loss_price=trade_setup.stop_loss,
-                market_id=settings.trading_market_id
-            )
-            
-            if risk_amount <= 0:
-                self.logger.warning("Risk manager rejected trade (position size too small)")
-                return
-            
-            # Place market order
-            success = await self.order_manager.place_market_order(
-                side=side,
-                size=risk_amount,
-                market_id=settings.trading_market_id
-            )
-            
-            if success:
-                self.trade_count += 1
-                trade_id = f"{settings.trading_market_id}_{settings.trading_symbol}_{int(datetime.now().timestamp())}"
-                
-                # Create enterprise-grade scaled exit plan
-                exit_plan = profit_manager.create_exit_plan(
-                    trade_id=trade_id,
-                    direction=trade_setup.direction,
-                    entry_price=trade_setup.entry_price,
-                    total_size=risk_amount,
-                    stop_loss_price=trade_setup.stop_loss
-                )
-                
-                self.logger.info("")
-                self.logger.info("📊 ENTERPRISE SCALED EXIT PLAN:")
-                self.logger.info(f"   🎯 Level 1: Exit {settings.profit_level_1_size}% at +{settings.profit_level_1_percent}%")
-                self.logger.info(f"   🎯 Level 2: Exit {settings.profit_level_2_size}% at +{settings.profit_level_2_percent}%")
-                self.logger.info(f"   🚀 Runner: {settings.profit_runner_size}% trails after +{settings.trailing_stop_activation}%")
-                self.logger.info("")
-                
-                # Record trade opening in tracker
-                win_rate_tracker.open_trade(
-                    trade_id=trade_id,
-                    market_id=settings.trading_market_id,
-                    symbol=settings.trading_symbol,
-                    direction=trade_setup.direction,
-                    entry_price=trade_setup.entry_price,
-                    size=risk_amount,
-                    stop_loss=trade_setup.stop_loss,
-                    take_profit=exit_plan.profit_levels[-1].trigger_price if exit_plan.profit_levels else trade_setup.entry_price * 1.05,
-                    confidence=trade_setup.confidence,
-                    reasons=trade_setup.reasons,
-                    warnings=trade_setup.warnings
-                )
-                
-                self.logger.info(f"🎯 HIGH CONFIDENCE trade executed: {side.upper()} {risk_amount} @ ${current_price:.2f}")
-                
-                # Send alert
-                self.alert_manager.send_alert(
-                    f"🎯 EXCELLENT Setup: {side.upper()} {settings.trading_symbol}\n"
-                    f"Confidence: {trade_setup.confidence:.1%}\n"
-                    f"Entry: ${trade_setup.entry_price:.2f}\n"
-                    f"Scaled Exits: {settings.profit_level_1_size}% @ +{settings.profit_level_1_percent}%, "
-                    f"{settings.profit_level_2_size}% @ +{settings.profit_level_2_percent}%, "
-                    f"{settings.profit_runner_size}% trails",
-                    "INFO"
-                )
-                
-                # Record to metrics
-                bot_metrics.record_trade(
-                    side=side,
-                    strategy="WinRateOptimizer",
-                    market=str(settings.trading_market_id)
-                )
-            
-            self.last_strategy_run = datetime.now()
+            # MODE 2: SINGLE-MARKET
+            else:
+                await self._run_single_market_strategy()
         
         except Exception as e:
-            self.logger.error(f"Error running strategies: {e}", exc_info=True)
+            self.logger.error(f"Error in strategy execution: {e}", exc_info=True)
+    
+    async def _run_top3_strategy(self):
+        """
+        🎯 TOP 3 HIGH-VOLUME 2% QUICK EXIT STRATEGY
+        ==========================================
+        
+        Focus: ETH-PERP, BTC-PERP, SOL-PERP
+        Goal: 50 trades × 2% = 100% profit
+        """
+        try:
+            self.logger.info("🎯 TOP 3 HIGH-VOLUME SCANNER (2% QUICK EXIT)")
+            self.logger.info("="*70)
+            
+            # Get current positions
+            positions = await self.order_manager.get_positions()
+            open_positions = [pos for pos in positions if pos.is_open]
+            
+            # Get account info
+            account_info = await self.order_manager.get_account_info()
+            if isinstance(account_info, dict):
+                if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                    balance = float(account_info['accounts'][0].get('collateral', 0))
+                else:
+                    balance = float(account_info.get('collateral', 0))
+            else:
+                balance = 0.0
+            
+            # Calculate portfolio heat
+            portfolio_heat = await self.risk_manager.calculate_portfolio_heat()
+            
+            self.logger.info(f"💰 Available Capital: ${balance:.2f}")
+            self.logger.info(f"📊 Portfolio Heat: {portfolio_heat:.1%}")
+            self.logger.info(f"🎯 Open Positions: {len(open_positions)}/3")
+            self.logger.info("="*70)
+            
+            # Scan top 3 tokens for opportunities
+            self.logger.info("🔍 SCANNING ETH, BTC, SOL FOR 2% OPPORTUNITIES...")
+            all_opportunities = await top3_scanner.scan_for_opportunities()
+            
+            if not all_opportunities:
+                self.logger.info("⏳ NO 2% QUICK EXIT SETUPS - WAITING FOR QUALITY SIGNALS")
+                self.logger.info(f"   Trading top 3: ETH-PERP, BTC-PERP, SOL-PERP")
+                return
+            
+            # Find first opportunity that we don't already have a position in
+            best_opportunity = None
+            for opp in all_opportunities:
+                existing_pos = next((pos for pos in open_positions if pos.market_id == opp.market_id), None)
+                if not existing_pos:
+                    best_opportunity = opp
+                    break
+            
+            if not best_opportunity:
+                self.logger.info(f"⏸️  Already in all available opportunities - monitoring {len(open_positions)} positions")
+                return
+            
+            # Check if we can open a new position (max 5)
+            if len(open_positions) >= settings.max_open_positions:
+                self.logger.info(f"⏸️  Max positions reached ({len(open_positions)}/{settings.max_open_positions}) - waiting for exits")
+                return
+            
+            # Display opportunity
+            self.logger.info(f"")
+            self.logger.info(f"🎯 BEST 2% OPPORTUNITY FOUND!")
+            self.logger.info(f"="*70)
+            self.logger.info(f"   Token: {best_opportunity.symbol}")
+            self.logger.info(f"   Direction: {best_opportunity.direction}")
+            self.logger.info(f"   Entry: ${best_opportunity.entry_price:.2f}")
+            # With 5x leverage, 2% PnL = 0.4% price move (2% / 5 = 0.4%)
+            price_move_pct = settings.profit_level_1_percent / settings.leverage / 100
+            target_price = best_opportunity.entry_price * (1 + price_move_pct if best_opportunity.direction == "LONG" else 1 - price_move_pct)
+            self.logger.info(f"   Target: +{settings.profit_level_1_percent}% PnL = ${target_price:.2f} ({price_move_pct*100:.2f}% price move with {settings.leverage}x leverage)")
+            stop_price = best_opportunity.entry_price * (1 - settings.stop_loss_percent/settings.leverage/100 if best_opportunity.direction == "LONG" else 1 + settings.stop_loss_percent/settings.leverage/100)
+            self.logger.info(f"   Stop: -{settings.stop_loss_percent}% PnL = ${stop_price:.2f}")
+            self.logger.info(f"   Quality Score: {best_opportunity.total_score:.2f}")
+            self.logger.info(f"   Confidence: {best_opportunity.confidence:.0%}")
+            self.logger.info(f"="*70)
+            
+            # Create signal
+            signal = Signal(
+                signal_type=SignalType.BUY if best_opportunity.direction == "LONG" else SignalType.SELL,
+                strength=best_opportunity.confidence,
+                price=best_opportunity.entry_price,
+                reason=f"Top3 2% Exit: {best_opportunity.symbol} (Score: {best_opportunity.total_score:.2f})",
+                timestamp=datetime.now()
+            )
+            
+            # Set market ID for order execution
+            self.market_data.market_id = best_opportunity.market_id
+            
+            # Execute the trade
+            success = await self.execute_signal(signal)
+            
+            if success:
+                self.logger.info(f"✅ 2% QUICK EXIT TRADE EXECUTED ON {best_opportunity.symbol}!")
+            else:
+                self.logger.info(f"❌ Failed to execute trade on {best_opportunity.symbol}")
+        
+        except Exception as e:
+            self.logger.error(f"Error in top 3 strategy: {e}", exc_info=True)
+            self.alert_manager.alert_error(f"Top 3 strategy error: {e}")
+    
+    async def _run_single_market_strategy(self):
+        """Traditional single-market trading strategy"""
+        self.logger.info(f"Trading {settings.trading_symbol}...")
+        
+        # Create wrapper and fetch latest data
+        wrapper = MarketDataWrapper(self.market_data)
+        await wrapper.fetch_latest_data()
+        
+        # Check if we have valid price data
+        if wrapper.price == 0.0:
+            self.logger.warning("No price data available, skipping strategy run")
+            return
+        
+        # Get signals from all strategies (official SDK methods only)
+        signals = await self.strategy_manager.analyze_market(wrapper)
+        
+        if signals:
+            # Get consensus from multiple signals
+            best_signal = self.strategy_manager.get_consensus_signal(signals)
+            if best_signal:
+                self.logger.info(f"✅ Signal: {best_signal.signal_type.name} - Strength: {best_signal.strength:.2f} - {best_signal.reason}")
+                await self.execute_signal(best_signal)
+            else:
+                self.logger.debug("No consensus from signals")
+        else:
+            self.logger.debug("No signals generated")
+        
+        self.last_strategy_run = datetime.now()
+    
+    async def check_risk_and_positions_fast(self):
+        """
+        FAST position monitoring when positions are open (1-second loop)
+        Minimal logging, cached positions, prioritizes TP/SL execution
+        """
+        try:
+            # Fetch positions only every 3 seconds to save API calls (still fast enough)
+            now = datetime.now()
+            if (now - self.last_position_fetch).total_seconds() >= 3:
+                self.position_cache = await self.order_manager.get_positions()
+                self.last_position_fetch = now
+                self.has_open_positions = len([p for p in self.position_cache if p.is_open]) > 0
+                
+                # Sync local_positions with actual API positions
+                actual_count = len([p for p in self.position_cache if p.is_open])
+                local_count = len(self.order_manager.local_positions)
+                
+                if local_count != actual_count:
+                    # Only sync if discrepancy persists (allow 10 seconds for API lag)
+                    should_sync = False
+                    if actual_count == 0 and local_count > 0:
+                        # Check if local positions are old (>10s)
+                        oldest_time = min(p.get('opened_at', datetime.now()) for p in self.order_manager.local_positions)
+                        age_seconds = (now - oldest_time).total_seconds()
+                        if age_seconds > 10:
+                            self.logger.info(f"🔄 Syncing local positions: {local_count} → {actual_count} (positions closed)")
+                            self.order_manager.local_positions.clear()
+                            should_sync = True
+                    elif actual_count > local_count:
+                        # API has more positions than local (shouldn't happen, but sync anyway)
+                        self.logger.info(f"🔄 Syncing local positions: {local_count} → {actual_count} (API ahead)")
+                        self.order_manager.local_positions.clear()
+                        should_sync = True
+                    elif actual_count < local_count and (now - self.last_position_fetch).total_seconds() > 15:
+                        # API shows fewer but only after 15s (positions really closed)
+                        self.logger.info(f"🔄 Syncing local positions: {local_count} → {actual_count} (confirmed closed)")
+                        self.order_manager.local_positions = self.order_manager.local_positions[-actual_count:] if actual_count > 0 else []
+                        should_sync = True
+                
+                if self.has_open_positions:
+                    self.logger.debug(f"⚡ FAST 1s check: {len([p for p in self.position_cache if p.is_open])} open positions")
+            
+            # Fast TP/SL check using cached positions
+            if self.position_cache:
+                # Only log position count if it changed
+                current_count = len([p for p in self.position_cache if p.is_open])
+                if not hasattr(self, '_last_logged_count') or self._last_logged_count != current_count:
+                    self.logger.info(f"🔍 Monitoring {current_count} open positions")
+                    self._last_logged_count = current_count
+                
+                for position in self.position_cache:
+                    if not position.is_open:
+                        continue
+                    
+                    pnl_pct = position.pnl_percentage
+                    symbol = settings.trading_symbol
+                    position_id = f"{position.market_id}_{position.size}"
+                    
+                    # Track highest PnL for trailing stop
+                    if position_id not in self.position_highest_pnl:
+                        self.position_highest_pnl[position_id] = pnl_pct
+                        self.logger.info(f"🎯 NEW: {symbol} @ {pnl_pct:.2f}%")
+                    else:
+                        if pnl_pct > self.position_highest_pnl[position_id]:
+                            old_highest = self.position_highest_pnl[position_id]
+                            self.position_highest_pnl[position_id] = pnl_pct
+                            self.logger.info(f"📈 {symbol}: {old_highest:.2f}% → {pnl_pct:.2f}%")
+                    
+                    highest_pnl = self.position_highest_pnl[position_id]
+                    
+                    # ==================================================
+                    # HYBRID EXIT MANAGEMENT: OCO (Exchange) + Bot (Advanced)
+                    # ==================================================
+                    should_close, reason = await self.hybrid_exit_manager.check_position_for_hybrid_exit(
+                        position=position,
+                        pnl_pct=pnl_pct,
+                        highest_pnl=highest_pnl,
+                        position_id=position_id
+                    )
+                    
+                    if should_close:
+                        # Check if already closed (avoid duplicates)
+                        if position_id in self.hybrid_exit_manager.recently_closed:
+                            continue
+                        
+                        # Close via hybrid manager
+                        success = await self.hybrid_exit_manager.close_position_hybrid(
+                            position=position,
+                            reason=reason,
+                            position_id=position_id
+                        )
+                        
+                        if success:
+                            # Cleanup tracking
+                            self.has_open_positions = False
+                            self.position_cache = None
+                            self.last_position_fetch = 0
+                            
+                            # Update win rate
+                            if pnl_pct > 0:
+                                self.consecutive_losses = 0
+                            else:
+                                self.consecutive_losses += 1
+                            
+                            # Cleanup highest PnL tracking
+                            if position_id in self.position_highest_pnl:
+                                del self.position_highest_pnl[position_id]
+                            
+                            self.logger.info(f"✅ Position closed via hybrid: {reason}")
+                            continue
+                        else:
+                            self.logger.error(f"❌ Failed to close position: {reason}")
+                            continue
+            
+            # Update has_open_positions flag
+            if not self.position_cache or not any(p.is_open for p in self.position_cache):
+                self.has_open_positions = False
+            
+            self.last_risk_check = datetime.now()
+        
+        except Exception as e:
+            self.logger.error(f"Error in fast monitoring: {e}")
     
     async def check_risk_and_positions(self):
-        """Periodic risk check and automated position management WITH trailing stops and scaled exits"""
+        """Periodic risk check and automated position management (full version)"""
         try:
             # Get current positions
             positions = await self.order_manager.get_positions()
+            self.position_cache = positions
+            self.last_position_fetch = datetime.now()
+            self.has_open_positions = len([p for p in positions if p.is_open]) > 0
+            
             current_price = self.price_history[-1] if len(self.price_history) > 0 else 0
             
-            # Check scaled profit levels for all active plans
-            for trade_id, plan in list(profit_manager.active_plans.items()):
-                # Update trailing stop for runner
-                new_trailing_stop = profit_manager.update_trailing_stop(trade_id, current_price)
-                
-                # Check if any profit levels triggered
-                triggered_levels = profit_manager.check_profit_levels(trade_id, current_price)
-                
-                for level in triggered_levels:
-                    self.logger.info(f"💰 Profit Level {level.level_num} triggered for {trade_id}!")
-                    self.logger.info(f"   Selling {level.size:.6f} @ ${current_price:.2f}")
-                    
-                    # Execute partial exit
-                    side = "sell" if plan.direction == "long" else "buy"
-                    success = await self.order_manager.place_market_order(
-                        side=side,
-                        size=level.size,
-                        market_id=settings.trading_market_id
-                    )
-                    
-                    if success:
-                        profit_manager.mark_level_filled(trade_id, level.level_num, current_price)
-                        
-                        profit_usd = level.size * abs(current_price - plan.entry_price)
-                        self.logger.info(f"✅ Locked in ${profit_usd:.2f} profit!")
-                        
-                        # Alert
-                        self.alert_manager.send_alert(
-                            f"💰 Level {level.level_num} Exit: {level.size:.6f} @ ${current_price:.2f}\n"
-                            f"Profit: +${profit_usd:.2f} (+{level.trigger_percent:.1f}%)\n"
-                            f"Remaining: {plan.remaining_size:.6f}",
-                            "INFO"
-                        )
+            # Note: ML-adaptive exits temporarily disabled
+            # TODO: Re-implement adaptive exit manager if needed
             
-            # Update trailing stops and check for hits
-            for pos in positions:
-                if hasattr(pos, 'is_open') and pos.is_open:
-                    position_id = f"{pos.market_id}_{pos.symbol}"
-                    
-                    # Create stop if doesn't exist
-                    if not trailing_stop_manager.get_stop(position_id):
-                        # Calculate ATR
-                        if len(self.price_history) >= 14:
-                            atr = TechnicalIndicators.atr(
-                                self.high_history,
-                                self.low_history,
-                                self.price_history,
-                                period=14
-                            )
-                            
-                            trailing_stop_manager.create_stop(
-                                position_id=position_id,
-                                market_id=pos.market_id,
-                                is_long=pos.is_long,
-                                entry_price=pos.entry_price,
-                                atr=atr
-                            )
-                            self.logger.info(f"Created trailing stop for {position_id}")
-                    
-                    # Update stop with current price
-                    stop_price, should_close, reason = trailing_stop_manager.update_stop(
-                        position_id=position_id,
-                        current_price=pos.current_price
-                    )
-                    
-                    # Close position if stop hit
-                    if should_close:
-                        self.logger.warning(f"Trailing stop hit for {position_id}: {reason}")
-                        
-                        side = "sell" if pos.is_long else "buy"
-                        await self.order_manager.place_market_order(
-                            side=side,
-                            size=abs(pos.size),
-                            market_id=pos.market_id
-                        )
-                        
-                        # Record trade close in tracker
-                        # Find matching open trade
-                        open_trades = win_rate_tracker.get_open_trades()
-                        for trade in open_trades:
-                            if trade.market_id == pos.market_id and trade.symbol == pos.symbol:
-                                win_rate_tracker.close_trade(
-                                    trade_id=trade.id,
-                                    exit_price=pos.current_price,
-                                    exit_reason="trailing_stop"
-                                )
-                                break
-                        
-                        trailing_stop_manager.remove_stop(position_id)
-                        self.alert_manager.send_alert(
-                            f"🛑 Trailing stop closed {position_id}: {reason}",
-                            "INFO"
-                        )
-            
-            # Monitor positions with auto stop-loss/take-profit (existing logic)
+            # Monitor positions with auto stop-loss/take-profit (instant -2%/+3% exits)
             risk_report = await self.risk_manager.monitor_positions()
             
             # Log alerts
@@ -544,8 +694,9 @@ class AdvancedTradingBot:
                 if hasattr(pos, 'is_open') and pos.is_open:
                     side = "LONG" if pos.is_long else "SHORT"
                     pnl_symbol = "🟢" if pos.unrealized_pnl > 0 else "🔴"
-                    print(f"   {pnl_symbol} Market {pos.market_id} ({pos.symbol}): {side} {abs(pos.size):.4f}")
-                    print(f"      Entry: ${pos.entry_price:.4f} | Current: ${pos.current_price:.4f}")
+                    symbol = settings.trading_symbol
+                    print(f"   {pnl_symbol} Market {pos.market_id} ({symbol}): {side} {abs(pos.size):.4f}")
+                    print(f"      Entry: ${pos.entry_price:.4f} | Current: ${pos.mark_price:.4f}")
                     print(f"      PnL: ${pos.unrealized_pnl:.2f} ({pos.pnl_percentage:+.2f}%)")
                     total_pnl += pos.unrealized_pnl
             
@@ -614,39 +765,54 @@ class AdvancedTradingBot:
         """Start the advanced trading bot"""
         self.logger.info("Starting Advanced Trading Bot...")
         
-        # CRITICAL: Resolve market metadata at startup
-        self.logger.info(f"Resolving market metadata for {settings.trading_symbol} (Market ID: {settings.trading_market_id})...")
-        client = await get_client()
-        
-        # Try to resolve using both symbol and market_id
-        market_id = await resolve_market_metadata(
-            client, 
-            symbol=settings.trading_symbol,
-            market_id=settings.trading_market_id
-        )
-        
-        if market_id is None:
-            self.logger.error(f"Failed to resolve market metadata")
-            self.logger.error("Bot cannot start without valid market metadata")
-            return
-        
-        # Update settings with resolved market_id (in case it was corrected)
-        if market_id != settings.trading_market_id:
-            self.logger.warning(f"Config has market_id={settings.trading_market_id}, resolved to {market_id}")
-            settings.trading_market_id = market_id
-        
-        # Display market info
-        market_info = market_metadata.get_market(market_id)
-        if market_info:
-            detected_symbol = market_info.get('symbol', settings.trading_symbol)
-            self.logger.info(f"✓ Market: {detected_symbol} (ID: {market_id})")
-            self.logger.info(f"  Base decimals: {market_info['base_decimals']}")
-            self.logger.info(f"  Price decimals: {market_info['price_decimals']}")
+        # Check trading mode
+        if settings.trading_symbol == "MULTI-TOP-3":
+            self.logger.info("🎯 TOP 3 HIGH-VOLUME MODE DETECTED")
+            self.logger.info("Focus: ETH-PERP, BTC-PERP, SOL-PERP for 2% quick exits")
+            # Initialize Top 3 scanner
+            await initialize_top3_scanner()
+            self.logger.info("✓ Top 3 High-Volume Scanner ready!")
+            market_id = 0  # Primary market (ETH-PERP)
             
-            # Update symbol if it was auto-detected
-            if detected_symbol != settings.trading_symbol:
-                self.logger.info(f"  Auto-detected symbol: {detected_symbol}")
-                settings.trading_symbol = detected_symbol
+        else:
+            # CRITICAL: Resolve market metadata at startup for single-market mode
+            self.logger.info(f"Resolving market metadata for {settings.trading_symbol} (Market ID: {settings.trading_market_id})...")
+            client = await get_client()
+            
+            # Try to resolve using both symbol and market_id
+            market_id = await resolve_market_metadata(
+                client, 
+                symbol=settings.trading_symbol,
+                market_id=settings.trading_market_id
+            )
+            
+            if market_id is None:
+                self.logger.error(f"Failed to resolve market metadata")
+                self.logger.error("Bot cannot start without valid market metadata")
+                return
+            
+            # Update settings with resolved market_id (in case it was corrected)
+            if market_id != settings.trading_market_id:
+                self.logger.warning(f"Config has market_id={settings.trading_market_id}, resolved to {market_id}")
+                settings.trading_market_id = market_id
+        
+        # Display market info (skip for multi-market modes)
+        if settings.trading_symbol not in ["ULTRA-DYNAMIC", "MULTI-TOP-3"]:
+            market_info = market_metadata.get_market(market_id)
+            if market_info:
+                detected_symbol = market_info.get('symbol', settings.trading_symbol)
+                self.logger.info(f"✓ Market: {detected_symbol} (ID: {market_id})")
+                self.logger.info(f"  Base decimals: {market_info['base_decimals']}")
+                self.logger.info(f"  Price decimals: {market_info['price_decimals']}")
+        
+        # Update symbol if it was auto-detected (only for single-market mode)
+        if settings.trading_symbol not in ["ULTRA-DYNAMIC", "MULTI-TOP-3"]:
+            market_info = market_metadata.get_market(market_id)
+            if market_info:
+                detected_symbol = market_info.get('symbol', settings.trading_symbol)
+                if detected_symbol != settings.trading_symbol:
+                    self.logger.info(f"  Auto-detected symbol: {detected_symbol}")
+                    settings.trading_symbol = detected_symbol
         
         # Check for dry run mode
         if settings.dry_run:
@@ -660,7 +826,11 @@ class AdvancedTradingBot:
         else:
             self.logger.warning("⚠️  Trading on MAINNET with REAL funds!")
         
-        self.logger.info(f"Trading {settings.trading_symbol} on market ID {settings.trading_market_id}")
+        # Different messages for ultra-dynamic vs single-market mode
+        if settings.trading_symbol == "ULTRA-DYNAMIC":
+            self.logger.info("🎯 ULTRA-DYNAMIC MODE: Scanning top 10 highest volume tokens")
+        else:
+            self.logger.info(f"Trading {settings.trading_symbol} on market ID {settings.trading_market_id}")
         
         # Setup signal handlers
         signal.signal(signal.SIGINT, self.handle_shutdown)
@@ -669,6 +839,20 @@ class AdvancedTradingBot:
         self.running = True
         self.logger.info("Bot started successfully")
         self.alert_manager.send_alert("Advanced Trading Bot started", "INFO")
+        
+        # CRITICAL: Check for existing positions on startup and set adaptive monitoring flag
+        try:
+            existing_positions = await self.order_manager.get_positions()
+            open_positions = [p for p in existing_positions if p.is_open]
+            if open_positions:
+                self.has_open_positions = True
+                self.logger.warning(f"🔥 DETECTED {len(open_positions)} EXISTING OPEN POSITION(S) - ENABLING 1-SECOND FAST MONITORING!")
+                for pos in open_positions:
+                    self.logger.warning(f"   Position: {pos.size:.4f} @ ${pos.entry_price:.2f}, PnL: {pos.pnl_percentage:.2f}%")
+            else:
+                self.logger.info("No existing positions detected - using 5-second monitoring")
+        except Exception as e:
+            self.logger.error(f"Error checking existing positions: {e}")
         
         # Initial status display - commented out temporarily to debug
         # self.logger.info("Calling display_status()...")
@@ -700,32 +884,40 @@ class AdvancedTradingBot:
                         price=current_price
                     )
                 
-                # Run trading strategies every 60 seconds
-                if (datetime.now() - self.last_strategy_run).seconds >= 60:
+                # Run trading strategies every 5 seconds (FAST for 1m scalping!)
+                if (datetime.now() - self.last_strategy_run).seconds >= 5:
                     await self.run_strategies()
                 
-                # Risk check and position monitoring every 5 minutes
-                if (datetime.now() - self.last_risk_check).seconds >= 300:
-                    await self.check_risk_and_positions()
+                # ADAPTIVE MONITORING: 1s when positions open (fast TP/SL), 5s when idle (save API calls)
+                check_interval = 1 if self.has_open_positions else 5
+                if (datetime.now() - self.last_risk_check).total_seconds() >= check_interval:
+                    # Fast check without excessive logging when positions are open
+                    if self.has_open_positions:
+                        await self.check_risk_and_positions_fast()
+                    else:
+                        await self.check_risk_and_positions()
+                    self.last_risk_check = datetime.now()
                 
-                # Update account balance metric
-                try:
-                    account_info = await self.order_manager.get_account_info()
-                    if isinstance(account_info, dict):
-                        if 'accounts' in account_info and len(account_info['accounts']) > 0:
-                            balance = float(account_info['accounts'][0].get('collateral', 0))
-                        else:
-                            balance = float(account_info.get('collateral', 0))
-                        bot_metrics.set_account_balance(balance)
-                except Exception as e:
-                    self.logger.debug(f"Error updating balance metric: {e}")
+                # Update account balance metric (only every 60 seconds to save API calls)
+                if iteration % 12 == 0:  # Every 12 iterations × 5s = 60 seconds
+                    try:
+                        account_info = await self.order_manager.get_account_info()
+                        if isinstance(account_info, dict):
+                            if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                                balance = float(account_info['accounts'][0].get('collateral', 0))
+                            else:
+                                balance = float(account_info.get('collateral', 0))
+                            bot_metrics.set_account_balance(balance)
+                    except Exception as e:
+                        self.logger.debug(f"Error updating balance metric: {e}")
                 
-                # Display status every 30 iterations (~15 minutes if 30s sleep)
+                # Display status every 30 iterations (~2.5 minutes if 5s sleep)
                 if iteration % 30 == 0:
                     await self.display_status()
                 
-                # Sleep before next iteration
-                await asyncio.sleep(30)  # Check every 30 seconds
+                # ADAPTIVE SLEEP: 1s when positions open (critical TP/SL), 5s when idle (save resources)
+                sleep_interval = 1 if self.has_open_positions else 5
+                await asyncio.sleep(sleep_interval)
             
             except KeyboardInterrupt:
                 self.logger.info("Keyboard interrupt received")
@@ -734,7 +926,7 @@ class AdvancedTradingBot:
                 self.logger.error(f"Error in main loop: {e}", exc_info=True)
                 bot_metrics.record_error(error_type=type(e).__name__, component="main_loop")
                 self.alert_manager.alert_error(str(e))
-                await asyncio.sleep(60)  # Wait longer on error
+                await asyncio.sleep(30)  # Wait on error
         
         await self.stop()
     

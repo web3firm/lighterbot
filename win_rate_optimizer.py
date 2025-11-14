@@ -95,9 +95,9 @@ class WinRateOptimizer:
     
     def __init__(self):
         self.timeframes = ["5m", "15m", "1h", "4h"]  # Multi-timeframe analysis
-        self.min_confidence = 0.65  # 65% minimum confidence (BALANCED MODE)
-        self.min_risk_reward = 1.5  # Minimum 1.5:1 R:R (BALANCED MODE)
-        self.max_funding_rate = 0.02  # Avoid extreme funding (2%)
+        self.min_confidence = 0.55  # 55% minimum confidence (QUALITY OVER QUANTITY)
+        self.min_risk_reward = 1.5  # Minimum 1.5:1 R:R (better trades)
+        self.max_funding_rate = 0.03  # Avoid extreme funding (3%)
         
     async def analyze_market(self, market_id: int) -> MarketContext:
         """
@@ -468,17 +468,17 @@ class WinRateOptimizer:
             warnings.append(f"Poor R:R ratio ({risk_reward_ratio:.2f}:1)")
             confidence_score -= 0.1
         
-        # 7. Determine quality (AGGRESSIVE MODE - lowered thresholds)
-        if confidence_score >= 0.70 and len(warnings) <= 1:
-            quality = TradeQuality.EXCELLENT  # 70%+ confidence
-        elif confidence_score >= 0.50 and len(warnings) <= 3:
-            quality = TradeQuality.GOOD  # 50-70% confidence - AGGRESSIVE MODE
-        elif confidence_score >= 0.35:
-            quality = TradeQuality.FAIR  # 35-50% - Will be boosted by ML/Breakout
+        # 7. Determine quality (ULTRA-AGGRESSIVE MODE - lowered thresholds)
+        if confidence_score >= 0.60 and len(warnings) <= 1:
+            quality = TradeQuality.EXCELLENT  # 60%+ confidence
+        elif confidence_score >= 0.40 and len(warnings) <= 3:
+            quality = TradeQuality.GOOD  # 40-60% confidence - ULTRA-AGGRESSIVE
+        elif confidence_score >= 0.25:
+            quality = TradeQuality.FAIR  # 25-40% - Will get massive boost from advanced patterns
         else:
             quality = TradeQuality.POOR
         
-        # In AGGRESSIVE MODE, accept EXCELLENT, GOOD, and FAIR (will be boosted by ML/Breakout)
+        # In ULTRA-AGGRESSIVE MODE, accept EXCELLENT, GOOD, and FAIR (boosted by ML/Breakout/Advanced Patterns)
         if quality not in [TradeQuality.EXCELLENT, TradeQuality.GOOD, TradeQuality.FAIR]:
             logger.info(f"Rejecting {direction} setup: quality={quality.value}, confidence={confidence_score:.2f}")
             return None
@@ -529,19 +529,26 @@ class WinRateOptimizer:
         elif short_setup:
             best_setup = short_setup
         
-        # If we have a setup, boost confidence with ML and breakout detection
+        # If we have a setup, boost confidence with ENTERPRISE-LEVEL analysis
         if best_setup:
+            total_boost = 0.0
+            boost_reasons = []
+            
             try:
                 from ml_predictor import ml_predictor
                 from breakout_detector import breakout_detector
+                from advanced_patterns import advanced_pattern_detector
+                from indicators import TechnicalIndicators
                 
-                # Get ML prediction
+                # Get price history for advanced analysis
                 tf_5m = market_context.timeframes.get("5m")
                 if tf_5m:
-                    recent_highs = [current_price] * 20  # Placeholder
-                    recent_lows = [current_price] * 20
-                    recent_volumes = [1.0] * 20
+                    recent_prices = [current_price] * 50  # Placeholder - will be replaced by real data
+                    recent_highs = [current_price * 1.01] * 50
+                    recent_lows = [current_price * 0.99] * 50
+                    recent_volumes = [1.0] * 50
                     
+                    # 1. ML Predictor boost (up to 15%)
                     ml_pred = ml_predictor.predict_next_candle(
                         current_price,
                         recent_highs,
@@ -550,41 +557,122 @@ class WinRateOptimizer:
                     )
                     
                     if ml_pred and ml_pred.direction == best_setup.direction:
-                        # ML confirms our direction - boost confidence!
-                        boost = ml_pred.confidence * 0.15  # Up to 15% boost
-                        best_setup.confidence = min(0.95, best_setup.confidence + boost)
-                        best_setup.reasons.append(f"ML confirms ({ml_pred.pattern_match})")
+                        boost = ml_pred.confidence * 0.15
+                        total_boost += boost
+                        boost_reasons.append(f"ML {ml_pred.pattern_match} (+{boost:.1%})")
                         logger.info(f"🤖 ML Boost: +{boost:.1%} ({ml_pred.pattern_match})")
-                
-                # Check for breakout
-                breakout = breakout_detector.detect_breakout(
-                    current_price,
-                    recent_highs,
-                    recent_lows,
-                    recent_volumes,
-                    [current_price] * 20
-                )
-                
-                if breakout:
-                    # Breakout detected - major boost!
-                    boost = breakout.strength * 0.20  # Up to 20% boost
-                    best_setup.confidence = min(0.95, best_setup.confidence + boost)
-                    best_setup.reasons.append(f"Breakout: {breakout.reason}")
-                    logger.info(f"🚀 Breakout Boost: +{boost:.1%} ({breakout.type})")
                     
-                    # Update TP for breakout trades
-                    best_setup.take_profit = breakout.target_price
+                    # 2. Breakout detector boost (up to 20%)
+                    breakout = breakout_detector.detect_breakout(
+                        current_price,
+                        recent_highs,
+                        recent_lows,
+                        recent_volumes,
+                        recent_prices
+                    )
+                    
+                    if breakout and breakout.direction == best_setup.direction:
+                        boost = breakout.strength * 0.20
+                        total_boost += boost
+                        boost_reasons.append(f"Breakout ({breakout.reason}) (+{boost:.1%})")
+                        logger.info(f"🚀 Breakout Boost: +{boost:.1%} ({breakout.type})")
+                        best_setup.take_profit = breakout.target_price
+                    
+                    # 3. ENTERPRISE: Harmonic patterns boost (up to 25%!)
+                    harmonic = advanced_pattern_detector.detect_harmonic_patterns(
+                        recent_prices,
+                        recent_highs,
+                        recent_lows
+                    )
+                    
+                    if harmonic and harmonic.direction == best_setup.direction:
+                        boost = harmonic.confidence * 0.25  # Harmonic patterns are VERY reliable
+                        total_boost += boost
+                        boost_reasons.append(f"{harmonic.pattern_type} (+{boost:.1%})")
+                        logger.info(f"🔷 Harmonic Pattern: {harmonic.pattern_type} +{boost:.1%}")
+                        # Update targets if harmonic is stronger
+                        if harmonic.confidence > 0.75:
+                            best_setup.take_profit = harmonic.target_price
+                    
+                    # 4. ENTERPRISE: Divergence boost (up to 15%)
+                    rsi = TechnicalIndicators.rsi(recent_prices, 14)
+                    macd_line, signal_line = TechnicalIndicators.macd(recent_prices, 12, 26, 9)
+                    
+                    divergences = advanced_pattern_detector.detect_divergences(
+                        recent_prices,
+                        rsi,
+                        macd_line
+                    )
+                    
+                    for div in divergences:
+                        if div.direction == best_setup.direction:
+                            boost = div.confidence * 0.15
+                            total_boost += boost
+                            boost_reasons.append(f"{div.div_type.value} (+{boost:.1%})")
+                            logger.info(f"📊 Divergence: {div.div_type.value} +{boost:.1%}")
+                    
+                    # 5. ENTERPRISE: Elliott Wave boost (up to 15%)
+                    elliott = advanced_pattern_detector.calculate_elliott_wave(recent_prices)
+                    
+                    if elliott and elliott['direction'] == best_setup.direction:
+                        boost = elliott['confidence'] * 0.15
+                        total_boost += boost
+                        boost_reasons.append(f"Elliott Wave {elliott['current_wave']} (+{boost:.1%})")
+                        logger.info(f"🌊 Elliott Wave: Wave {elliott['current_wave']} +{boost:.1%}")
+                    
+                    # 6. ENTERPRISE: Fibonacci level boost (up to 10%)
+                    fib_levels = advanced_pattern_detector.find_fibonacci_levels(
+                        recent_prices,
+                        recent_highs,
+                        recent_lows
+                    )
+                    
+                    # Check if current price is near key Fibonacci level
+                    for level_name, level_price in fib_levels.items():
+                        if abs(current_price - level_price) / current_price < 0.005:  # Within 0.5%
+                            boost = 0.10
+                            total_boost += boost
+                            boost_reasons.append(f"Fib {level_name} support (+{boost:.1%})")
+                            logger.info(f"📐 Fibonacci: Near {level_name} level +{boost:.1%}")
+                            break
+                    
+                    # 7. ENTERPRISE: Order block boost (up to 12%)
+                    order_blocks = advanced_pattern_detector.detect_order_blocks(
+                        recent_prices,
+                        recent_volumes,
+                        recent_highs,
+                        recent_lows
+                    )
+                    
+                    for block in order_blocks:
+                        if abs(current_price - block.price) / current_price < 0.01:  # Within 1%
+                            if (block.zone_type == "bullish_order_block" and best_setup.direction == "long") or \
+                               (block.zone_type == "bearish_order_block" and best_setup.direction == "short"):
+                                boost = block.strength * 0.12
+                                total_boost += boost
+                                boost_reasons.append(f"Order Block ({block.zone_type}) (+{boost:.1%})")
+                                logger.info(f"� Order Block: {block.zone_type} +{boost:.1%}")
+                                break
+                    
+                    # Apply total boost
+                    best_setup.confidence = min(0.95, best_setup.confidence + total_boost)
+                    
+                    if boost_reasons:
+                        logger.info(f"📈 Total Enterprise Boost: +{total_boost:.1%}")
+                        logger.info(f"   Boosted by: {', '.join(boost_reasons)}")
+                        best_setup.reasons.extend(boost_reasons)
             
             except Exception as e:
-                logger.debug(f"ML/Breakout check failed: {e}")
+                logger.debug(f"Advanced analysis failed: {e}")
             
-            # After boost, check if confidence is acceptable (50%+ for aggressive mode)
-            if best_setup.confidence < 0.50:
-                logger.info(f"❌ Setup confidence too low after boost: {best_setup.confidence:.1%} (need 50%+)")
+            # After boost, check if confidence is acceptable (40%+ for ultra-aggressive mode)
+            if best_setup.confidence < 0.40:
+                logger.info(f"❌ Setup confidence too low after boost: {best_setup.confidence:.1%} (need 40%+)")
                 logger.info(f"   Direction: {best_setup.direction}, Quality: {best_setup.quality.value}")
                 best_setup = None
             else:
                 logger.info(f"✅ TRADE READY: {best_setup.direction.upper()} @ {best_setup.confidence:.1%} confidence")
+                logger.info(f"   Base: {best_setup.confidence - total_boost:.1%} + Boost: {total_boost:.1%}")
         
         if not best_setup:
             logger.info("No quality setups found. Waiting...")

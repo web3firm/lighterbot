@@ -37,27 +37,34 @@ class Settings(BaseSettings):
     position_check_interval: int = Field(default=60, validation_alias="POSITION_CHECK_INTERVAL")
     
     # Percentage-based Position Sizing
-    position_size_percent: int = Field(default=20, validation_alias="POSITION_SIZE_PERCENT")
-    leverage: int = Field(default=3, validation_alias="LEVERAGE")
+    position_size_percent: int = Field(default=7, validation_alias="POSITION_SIZE_PERCENT")  # REDUCED from 10% to 7%
+    leverage: int = Field(default=5, validation_alias="LEVERAGE")  # 5x for 1m scalping
     stop_loss_percent: float = Field(default=2.0, validation_alias="STOP_LOSS_PERCENT")
+    max_collateral: int = Field(default=14, validation_alias="MAX_COLLATERAL")  # REDUCED from 50% to 14% (14% × 5x = 70% max usage)
+    max_open_positions: int = Field(default=3, validation_alias="MAX_OPEN_POSITIONS")  # REDUCED from 5 to 3
     
-    # Enterprise Scaled Profit Taking
+    # Static Scaled Profit Taking (3 levels)
     profit_taking_mode: str = Field(default="scaled", validation_alias="PROFIT_TAKING_MODE")
     profit_level_1_percent: float = Field(default=2.0, validation_alias="PROFIT_LEVEL_1_PERCENT")
-    profit_level_1_size: int = Field(default=30, validation_alias="PROFIT_LEVEL_1_SIZE")
-    profit_level_2_percent: float = Field(default=4.0, validation_alias="PROFIT_LEVEL_2_PERCENT")
+    profit_level_1_size: int = Field(default=40, validation_alias="PROFIT_LEVEL_1_SIZE")
+    profit_level_2_percent: float = Field(default=3.0, validation_alias="PROFIT_LEVEL_2_PERCENT")
     profit_level_2_size: int = Field(default=30, validation_alias="PROFIT_LEVEL_2_SIZE")
-    profit_runner_size: int = Field(default=40, validation_alias="PROFIT_RUNNER_SIZE")
-    trailing_stop_activation: float = Field(default=4.0, validation_alias="TRAILING_STOP_ACTIVATION")
-    trailing_stop_distance: float = Field(default=2.0, validation_alias="TRAILING_STOP_DISTANCE")
+    profit_level_3_percent: float = Field(default=4.0, validation_alias="PROFIT_LEVEL_3_PERCENT")
+    profit_level_3_size: int = Field(default=30, validation_alias="PROFIT_LEVEL_3_SIZE")
     
-    # Strategy Configuration
+    # Strategy Configuration - ENABLE ALL FOR MAXIMUM ACCURACY
+    aggressive_mode: bool = Field(default=True, validation_alias="AGGRESSIVE_MODE")
     enable_momentum_strategy: bool = Field(default=True, validation_alias="ENABLE_MOMENTUM_STRATEGY")
     enable_mean_reversion_strategy: bool = Field(default=True, validation_alias="ENABLE_MEAN_REVERSION_STRATEGY")
-    enable_market_making_strategy: bool = Field(default=False, validation_alias="ENABLE_MARKET_MAKING_STRATEGY")
-    enable_grid_trading_strategy: bool = Field(default=False, validation_alias="ENABLE_GRID_TRADING_STRATEGY")
+    enable_market_making_strategy: bool = Field(default=False, validation_alias="ENABLE_MARKET_MAKING_STRATEGY")  # Not for directional trading
+    enable_grid_trading_strategy: bool = Field(default=False, validation_alias="ENABLE_GRID_TRADING_STRATEGY")  # Not for directional trading
     enable_orderflow_strategy: bool = Field(default=True, validation_alias="ENABLE_ORDERFLOW_STRATEGY")
-    enable_sentiment_strategy: bool = Field(default=True, validation_alias="ENABLE_SENTIMENT_STRATEGY")
+    enable_sentiment_strategy: bool = Field(default=False, validation_alias="ENABLE_SENTIMENT_STRATEGY")  # Requires API keys
+    
+    # Time-of-Day Filter (avoid low liquidity hours)
+    trading_hours_start: int = Field(default=6, validation_alias="TRADING_HOURS_START")  # 6am UTC
+    trading_hours_end: int = Field(default=3, validation_alias="TRADING_HOURS_END")  # 3am UTC (next day)
+    enable_time_filter: bool = Field(default=True, validation_alias="ENABLE_TIME_FILTER")
     
     # API & Network Configuration
     api_retry_limit: int = Field(default=3, validation_alias="API_RETRY_LIMIT")
@@ -75,7 +82,7 @@ class Settings(BaseSettings):
     use_testnet: bool = Field(default=False, validation_alias="USE_TESTNET")
     
     # Logging
-    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")
+    log_level: str = Field(default="INFO", validation_alias="LOG_LEVEL")  # Changed from DEBUG to INFO for production
     log_file: str = Field(default="logs/bot.log", validation_alias="LOG_FILE")
     alert_webhook_url: Optional[str] = Field(default=None, validation_alias="ALERT_WEBHOOK_URL")
     

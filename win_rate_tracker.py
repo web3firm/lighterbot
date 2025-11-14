@@ -158,13 +158,18 @@ class WinRateTracker:
         trade.exit_price = exit_price
         trade.exit_reason = exit_reason
         
-        # Calculate PnL
+        # Calculate PnL with leverage adjustment
+        # PnL % on capital = (price_change / entry_price) * leverage * 100
+        from config import settings
+        
         if trade.direction == "long":
             trade.pnl = (exit_price - trade.entry_price) * trade.size
-            trade.pnl_percent = ((exit_price - trade.entry_price) / trade.entry_price) * 100
+            price_change_pct = ((exit_price - trade.entry_price) / trade.entry_price)
+            trade.pnl_percent = price_change_pct * settings.leverage * 100  # PnL % on capital with leverage
         else:  # short
             trade.pnl = (trade.entry_price - exit_price) * trade.size
-            trade.pnl_percent = ((trade.entry_price - exit_price) / trade.entry_price) * 100
+            price_change_pct = ((trade.entry_price - exit_price) / trade.entry_price)
+            trade.pnl_percent = price_change_pct * settings.leverage * 100  # PnL % on capital with leverage
         
         # Determine if winner
         trade.is_winner = trade.pnl > 0

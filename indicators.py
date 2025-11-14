@@ -191,3 +191,114 @@ class TechnicalIndicators:
         d = k  # Simplified: %D would normally be 3-period SMA of %K
         
         return (k, d)
+    
+    @staticmethod
+    def is_high_volatility(closes: List[float], highs: List[float], lows: List[float], threshold: float = 0.03) -> bool:
+        """
+        Check if market is in high volatility/whipsaw condition
+        
+        Args:
+            closes: List of close prices
+            highs: List of high prices
+            lows: List of low prices
+            threshold: ATR/Price ratio threshold (default 3% = 0.03)
+        
+        Returns:
+            True if volatility is too high (avoid trading)
+        """
+        if len(closes) < 15:
+            return False
+        
+        # Calculate ATR
+        current_atr = TechnicalIndicators.atr(highs, lows, closes, period=14)
+        current_price = closes[-1]
+        
+        if current_price == 0:
+            return False
+        
+        # ATR as percentage of price
+        atr_percent = current_atr / current_price
+        
+        # If ATR is above threshold, volatility is too high
+        return atr_percent > threshold
+
+    @staticmethod
+    def detect_candlestick_patterns(opens: List[float], highs: List[float], lows: List[float], closes: List[float]) -> dict:
+        """
+        Detect common candlestick patterns
+        
+        Returns dict with pattern names and confidence
+        """
+        if len(closes) < 3:
+            return {}
+        
+        patterns = {}
+        
+        # Get last 3 candles
+        o1, h1, l1, c1 = opens[-3], highs[-3], lows[-3], closes[-3]
+        o2, h2, l2, c2 = opens[-2], highs[-2], lows[-2], closes[-2]
+        o3, h3, l3, c3 = opens[-1], highs[-1], lows[-1], closes[-1]
+        
+        # Calculate candle bodies and wicks
+        body1 = abs(c1 - o1)
+        body2 = abs(c2 - o2)
+        body3 = abs(c3 - o3)
+        
+        upper_wick3 = h3 - max(c3, o3)
+        lower_wick3 = min(c3, o3) - l3
+        
+        # BULLISH PATTERNS
+        
+        # Hammer (bullish reversal)
+        if body3 > 0:
+            body_to_lower_wick = lower_wick3 / body3 if body3 > 0 else 0
+            body_to_upper_wick = upper_wick3 / body3 if body3 > 0 else 0
+            if c3 > o3 and body_to_lower_wick >= 2 and body_to_upper_wick < 0.5:
+                patterns['hammer'] = 0.75
+        
+        # Bullish Engulfing
+        if c1 > o1 and c2 < o2 and c3 > o3:  # Green after red
+            if c3 >= o2 and o3 <= c2:  # Current engulfs previous
+                patterns['bullish_engulfing'] = 0.80
+        
+        # Morning Star (3-candle reversal)
+        if c1 < o1 and body2 < body1 * 0.3 and c3 > o3:  # Red, small, green
+            if c3 > (o1 + c1) / 2:  # Green closes above midpoint of red
+                patterns['morning_star'] = 0.85
+        
+        # Three White Soldiers
+        if c1 > o1 and c2 > o2 and c3 > o3:  # Three consecutive greens
+            if c2 > c1 and c3 > c2:  # Each closes higher
+                patterns['three_white_soldiers'] = 0.80
+        
+        # BEARISH PATTERNS
+        
+        # Shooting Star (bearish reversal)
+        if body3 > 0:
+            body_to_upper_wick = upper_wick3 / body3 if body3 > 0 else 0
+            body_to_lower_wick = lower_wick3 / body3 if body3 > 0 else 0
+            if c3 < o3 and body_to_upper_wick >= 2 and body_to_lower_wick < 0.5:
+                patterns['shooting_star'] = 0.75
+        
+        # Bearish Engulfing
+        if c1 < o1 and c2 > o2 and c3 < o3:  # Red after green
+            if c3 <= o2 and o3 >= c2:  # Current engulfs previous
+                patterns['bearish_engulfing'] = 0.80
+        
+        # Evening Star (3-candle reversal)
+        if c1 > o1 and body2 < body1 * 0.3 and c3 < o3:  # Green, small, red
+            if c3 < (o1 + c1) / 2:  # Red closes below midpoint of green
+                patterns['evening_star'] = 0.85
+        
+        # Three Black Crows
+        if c1 < o1 and c2 < o2 and c3 < o3:  # Three consecutive reds
+            if c2 < c1 and c3 < c2:  # Each closes lower
+                patterns['three_black_crows'] = 0.80
+        
+        # Doji (indecision - can reverse either way)
+        avg_body = (body1 + body2) / 2
+        if body3 < avg_body * 0.1:  # Very small body
+            patterns['doji'] = 0.50
+        
+        return patterns
+

@@ -4,6 +4,7 @@ Lighter API Client using official lighter-python SDK
 import lighter
 import asyncio
 from typing import Dict, Any, Optional, List
+from datetime import datetime, timedelta
 from config import settings
 from logger import logger
 from utils import retry_async, resolve_market_metadata, circuit_breaker, lighter_api_breaker
@@ -25,6 +26,14 @@ class LighterClient:
         self.order_api = None
         self.transaction_api = None
         self.candlestick_api = None
+        
+        # GLOBAL API CACHES (prevent rate limit 429 errors)
+        self.account_info_cache = None
+        self.account_info_cache_time = datetime.now() - timedelta(seconds=100)
+        self.recent_trades_cache = {}
+        self.recent_trades_cache_time = {}
+        self.order_book_cache = {}
+        self.order_book_cache_time = {}
 
     @classmethod
     async def create(cls) -> "LighterClient":
@@ -114,10 +123,24 @@ class LighterClient:
     @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_order_book_details(self, market_id: int) -> Dict[str, Any]:
-        """Get order book details for specific market"""
+        """Get order book details for specific market with 5s cache"""
         try:
+            # Check cache (5 second TTL)
+            now = datetime.now()
+            if market_id in self.order_book_cache:
+                cache_age = (now - self.order_book_cache_time.get(market_id, now - timedelta(seconds=100))).total_seconds()
+                if cache_age < 5:
+                    return self.order_book_cache[market_id]
+            
+            # Fetch fresh data
             result = await self.order_api.order_book_details(market_id=market_id)
-            return result.to_dict() if hasattr(result, 'to_dict') else result
+            data = result.to_dict() if hasattr(result, 'to_dict') else result
+            
+            # Update cache
+            self.order_book_cache[market_id] = data
+            self.order_book_cache_time[market_id] = now
+            
+            return data
         except Exception as e:
             logger.error(f"Error getting order book details: {e}")
             raise  # Let retry_async handle this
@@ -125,12 +148,28 @@ class LighterClient:
     @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_recent_trades(self, market_id: int, limit: int = 100) -> List[Dict]:
-        """Get recent trades"""
+        """Get recent trades with 10s cache"""
         try:
+            # Check cache (10 second TTL)
+            cache_key = f"{market_id}_{limit}"
+            now = datetime.now()
+            if cache_key in self.recent_trades_cache:
+                cache_age = (now - self.recent_trades_cache_time.get(cache_key, now - timedelta(seconds=100))).total_seconds()
+                if cache_age < 10:
+                    return self.recent_trades_cache[cache_key]
+            
+            # Fetch fresh data
             result = await self.order_api.recent_trades(market_id=market_id, limit=limit)
             if hasattr(result, 'trades'):
-                return [t.to_dict() if hasattr(t, 'to_dict') else t for t in result.trades]
-            return []
+                trades = [t.to_dict() if hasattr(t, 'to_dict') else t for t in result.trades]
+            else:
+                trades = []
+            
+            # Update cache
+            self.recent_trades_cache[cache_key] = trades
+            self.recent_trades_cache_time[cache_key] = now
+            
+            return trades
         except Exception as e:
             logger.error(f"Error getting recent trades: {e}")
             raise  # Let retry_async handle this
@@ -218,11 +257,24 @@ class LighterClient:
     @circuit_breaker(breaker=lighter_api_breaker)
     @retry_async(max_attempts=settings.api_retry_limit)
     async def get_account_info(self, account_index: Optional[int] = None) -> Dict[str, Any]:
-        """Get account information"""
+        """Get account information with 30s cache (critical for rate limits!)"""
         try:
+            # Check cache (30 second TTL - accounts don't change often)
+            now = datetime.now()
+            cache_age = (now - self.account_info_cache_time).total_seconds()
+            if self.account_info_cache and cache_age < 30:
+                return self.account_info_cache
+            
+            # Fetch fresh data
             acc_idx = account_index or settings.lighter_account_index
             result = await self.account_api.account(by="index", value=str(acc_idx))
-            return result.to_dict() if hasattr(result, 'to_dict') else result
+            data = result.to_dict() if hasattr(result, 'to_dict') else result
+            
+            # Update cache
+            self.account_info_cache = data
+            self.account_info_cache_time = now
+            
+            return data
         except Exception as e:
             logger.error(f"Error getting account info: {e}")
             raise  # Let retry_async handle this
@@ -236,8 +288,20 @@ class LighterClient:
         try:
             acc_idx = account_index or settings.lighter_account_index
             account_info = await self.get_account_info(acc_idx)
+            
+            # Handle nested structure: {accounts: [{positions: [...]}]}
+            if 'accounts' in account_info and len(account_info['accounts']) > 0:
+                account_data = account_info['accounts'][0]
+                if 'positions' in account_data:
+                    # Filter out positions with zero size
+                    positions = [p for p in account_data['positions'] if float(p.get('position', 0)) != 0]
+                    return positions
+            
+            # Fallback: try top-level positions key
             if 'positions' in account_info:
-                return account_info['positions']
+                positions = [p for p in account_info['positions'] if float(p.get('position', 0)) != 0]
+                return positions
+            
             return []
         except Exception as e:
             logger.error(f"Error getting positions: {e}")

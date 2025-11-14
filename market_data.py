@@ -3,6 +3,7 @@ Market data module using official Lighter SDK
 """
 import asyncio
 from typing import Dict, Any, Optional, List
+from datetime import datetime
 from lighter_client import get_client
 from config import settings
 from logger import logger
@@ -14,20 +15,39 @@ class MarketData:
     def __init__(self):
         self._price_cache = {}
         self._orderbook_cache = {}
+        self._orderbook_cache_time = {}
         self.market_id = settings.trading_market_id
+        
+        # Candlesticks cache (15 second refresh)
+        self.candlesticks_cache = {}
+        self.candlesticks_cache_time = {}
+        self.candlesticks_cache_duration = 15  # seconds
+        
+        # Orderbook cache (5 second refresh for bid/ask)
+        self.orderbook_cache_duration = 5  # seconds
     
     async def get_orderbook(self, market_id: Optional[int] = None) -> Dict[str, Any]:
-        """Get current orderbook"""
+        """Get current orderbook with 5-second caching"""
         try:
-            client = await get_client()
             m_id = market_id if market_id is not None else self.market_id
+            
+            # Check cache (5 seconds for bid/ask freshness)
+            if m_id in self._orderbook_cache and m_id in self._orderbook_cache_time:
+                cache_age = (datetime.now() - self._orderbook_cache_time[m_id]).total_seconds()
+                if cache_age < self.orderbook_cache_duration:
+                    return self._orderbook_cache[m_id]
+            
+            # Fetch fresh data
+            client = await get_client()
             data = await client.get_order_book_details(m_id)
             if data:
                 self._orderbook_cache[m_id] = data
-                logger.debug(f"Updated orderbook for market {m_id}")
+                self._orderbook_cache_time[m_id] = datetime.now()
+                logger.debug(f"Updated orderbook for market {m_id} (cached for {self.orderbook_cache_duration}s)")
             return data
         except Exception as e:
             logger.error(f"Error fetching orderbook: {e}")
+            # Return cached data on error if available
             return self._orderbook_cache.get(market_id or self.market_id, {})
     
     async def get_all_orderbooks(self) -> Dict[str, Any]:
@@ -134,7 +154,7 @@ class MarketData:
         limit: int = 100
     ) -> List[Dict]:
         """
-        Get candlestick data
+        Get candlestick data with 15-second caching
         
         Args:
             market_id: Market ID (default: from settings)
@@ -142,10 +162,24 @@ class MarketData:
             limit: Number of candles
         """
         try:
-            client = await get_client()
             m_id = market_id if market_id is not None else self.market_id
+            cache_key = f"{m_id}_{resolution}_{limit}"
+            
+            # Check cache
+            if cache_key in self.candlesticks_cache:
+                cache_age = (datetime.now() - self.candlesticks_cache_time[cache_key]).total_seconds()
+                if cache_age < self.candlesticks_cache_duration:
+                    return self.candlesticks_cache[cache_key]
+            
+            # Fetch fresh data
+            client = await get_client()
             candles = await client.get_candlesticks(m_id, resolution, limit)
-            logger.debug(f"Fetched {len(candles)} candlesticks")
+            
+            # Update cache
+            self.candlesticks_cache[cache_key] = candles
+            self.candlesticks_cache_time[cache_key] = datetime.now()
+            
+            logger.debug(f"Fetched {len(candles)} candlesticks (cached for {self.candlesticks_cache_duration}s)")
             return candles
         except Exception as e:
             logger.error(f"Error fetching candlesticks: {e}")

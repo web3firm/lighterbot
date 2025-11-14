@@ -1,5 +1,6 @@
 """
-Enterprise-grade profit management with scaled exits
+Simple profit management with 3 static exit levels
+No ML, no trailing stops - just clean exits
 """
 import logging
 from typing import Dict, List, Optional
@@ -16,24 +17,10 @@ class ProfitLevel:
     level_num: int
     trigger_percent: float
     size_percent: int
-    trigger_price: float
     size: float
     filled: bool = False
     filled_time: Optional[datetime] = None
     filled_price: Optional[float] = None
-
-
-@dataclass
-class RunnerConfig:
-    """Trailing stop configuration for runner position"""
-    size_percent: int
-    size: float
-    activation_percent: float
-    activation_price: float
-    trailing_distance_percent: float
-    activated: bool = False
-    highest_price: float = 0.0
-    current_trailing_stop: float = 0.0
 
 
 @dataclass
@@ -45,8 +32,7 @@ class ScaledExitPlan:
     total_size: float
     stop_loss_price: float
     profit_levels: List[ProfitLevel]
-    runner: RunnerConfig
-    remaining_size: float
+    remaining_size: float = 0.0
     
     def __post_init__(self):
         """Calculate remaining size"""
@@ -55,13 +41,10 @@ class ScaledExitPlan:
 
 class ProfitManager:
     """
-    Enterprise-grade profit management
-    
-    Handles:
-    - Multiple profit levels
-    - Partial exits at each level
-    - Trailing stop for runner position
-    - Position tracking
+    Simple profit management with 3 static levels:
+    - Level 1: +2% → Exit 40%
+    - Level 2: +3% → Exit 30%
+    - Level 3: +4% → Exit 30%
     """
     
     def __init__(self):
@@ -91,51 +74,32 @@ class ProfitManager:
         """
         profit_levels = []
         
-        # Level 1: First profit target
+        # Level 1: Quick profit at +2% (40% exit)
         level1_size = total_size * (settings.profit_level_1_size / 100.0)
-        if direction == "long":
-            level1_trigger = entry_price * (1 + settings.profit_level_1_percent / 100)
-        else:
-            level1_trigger = entry_price * (1 - settings.profit_level_1_percent / 100)
-        
         profit_levels.append(ProfitLevel(
             level_num=1,
             trigger_percent=settings.profit_level_1_percent,
             size_percent=settings.profit_level_1_size,
-            trigger_price=level1_trigger,
             size=level1_size
         ))
         
-        # Level 2: Second profit target
+        # Level 2: Second exit at +3% (30% exit)
         level2_size = total_size * (settings.profit_level_2_size / 100.0)
-        if direction == "long":
-            level2_trigger = entry_price * (1 + settings.profit_level_2_percent / 100)
-        else:
-            level2_trigger = entry_price * (1 - settings.profit_level_2_percent / 100)
-        
         profit_levels.append(ProfitLevel(
             level_num=2,
             trigger_percent=settings.profit_level_2_percent,
             size_percent=settings.profit_level_2_size,
-            trigger_price=level2_trigger,
             size=level2_size
         ))
         
-        # Runner: Trailing stop portion
-        runner_size = total_size * (settings.profit_runner_size / 100.0)
-        if direction == "long":
-            activation_price = entry_price * (1 + settings.trailing_stop_activation / 100)
-        else:
-            activation_price = entry_price * (1 - settings.trailing_stop_activation / 100)
-        
-        runner = RunnerConfig(
-            size_percent=settings.profit_runner_size,
-            size=runner_size,
-            activation_percent=settings.trailing_stop_activation,
-            activation_price=activation_price,
-            trailing_distance_percent=settings.trailing_stop_distance,
-            highest_price=entry_price
-        )
+        # Level 3: Final exit at +4% (30% exit)
+        level3_size = total_size * (settings.profit_level_3_size / 100.0)
+        profit_levels.append(ProfitLevel(
+            level_num=3,
+            trigger_percent=settings.profit_level_3_percent,
+            size_percent=settings.profit_level_3_size,
+            size=level3_size
+        ))
         
         plan = ScaledExitPlan(
             trade_id=trade_id,
@@ -144,96 +108,31 @@ class ProfitManager:
             total_size=total_size,
             stop_loss_price=stop_loss_price,
             profit_levels=profit_levels,
-            runner=runner
+            remaining_size=total_size
         )
         
         self.active_plans[trade_id] = plan
         
-        self.logger.info(f"📊 Created scaled exit plan for {trade_id}")
-        self.logger.info(f"   Entry: ${entry_price:.2f}")
-        self.logger.info(f"   Total Size: {total_size:.6f}")
-        self.logger.info(f"   Level 1: {settings.profit_level_1_size}% at ${level1_trigger:.2f} (+{settings.profit_level_1_percent}%)")
-        self.logger.info(f"   Level 2: {settings.profit_level_2_size}% at ${level2_trigger:.2f} (+{settings.profit_level_2_percent}%)")
-        self.logger.info(f"   Runner: {settings.profit_runner_size}% trails after ${activation_price:.2f} (+{settings.trailing_stop_activation}%)")
-        self.logger.info(f"   Stop Loss: ${stop_loss_price:.2f} (-{settings.stop_loss_percent}%)")
+        self.logger.info(f"📊 Created exit plan for {trade_id}")
+        self.logger.info(f"   Entry: ${entry_price:.2f}, Size: {total_size:.4f}")
+        self.logger.info(f"   L1: {settings.profit_level_1_size}% @ +{settings.profit_level_1_percent}%")
+        self.logger.info(f"   L2: {settings.profit_level_2_size}% @ +{settings.profit_level_2_percent}%")
+        self.logger.info(f"   L3: {settings.profit_level_3_size}% @ +{settings.profit_level_3_percent}%")
+        self.logger.info(f"   Stop Loss: -{ settings.stop_loss_percent}%")
         
         return plan
-    
-    def update_trailing_stop(
-        self,
-        trade_id: str,
-        current_price: float
-    ) -> Optional[float]:
-        """
-        Update trailing stop for runner position
-        
-        Args:
-            trade_id: Trade identifier
-            current_price: Current market price
-            
-        Returns:
-            New trailing stop price if updated, None otherwise
-        """
-        if trade_id not in self.active_plans:
-            return None
-        
-        plan = self.active_plans[trade_id]
-        runner = plan.runner
-        
-        # Check if we should activate trailing
-        if not runner.activated:
-            if plan.direction == "long":
-                if current_price >= runner.activation_price:
-                    runner.activated = True
-                    runner.highest_price = current_price
-                    self.logger.info(f"🎯 Trailing stop ACTIVATED for {trade_id} at ${current_price:.2f}")
-            else:  # short
-                if current_price <= runner.activation_price:
-                    runner.activated = True
-                    runner.highest_price = current_price
-                    self.logger.info(f"🎯 Trailing stop ACTIVATED for {trade_id} at ${current_price:.2f}")
-        
-        # Update trailing stop if activated
-        if runner.activated:
-            # Update highest price
-            if plan.direction == "long":
-                if current_price > runner.highest_price:
-                    runner.highest_price = current_price
-                    # Calculate new trailing stop
-                    new_stop = current_price * (1 - runner.trailing_distance_percent / 100)
-                    
-                    # Only move stop up, never down
-                    if new_stop > runner.current_trailing_stop:
-                        old_stop = runner.current_trailing_stop
-                        runner.current_trailing_stop = new_stop
-                        self.logger.info(f"📈 Trailing stop moved: ${old_stop:.2f} → ${new_stop:.2f} (peak: ${runner.highest_price:.2f})")
-                        return new_stop
-            else:  # short
-                if current_price < runner.highest_price:
-                    runner.highest_price = current_price
-                    # Calculate new trailing stop
-                    new_stop = current_price * (1 + runner.trailing_distance_percent / 100)
-                    
-                    # Only move stop down, never up
-                    if new_stop < runner.current_trailing_stop or runner.current_trailing_stop == 0:
-                        old_stop = runner.current_trailing_stop
-                        runner.current_trailing_stop = new_stop
-                        self.logger.info(f"📉 Trailing stop moved: ${old_stop:.2f} → ${new_stop:.2f} (low: ${runner.highest_price:.2f})")
-                        return new_stop
-        
-        return None
     
     def check_profit_levels(
         self,
         trade_id: str,
-        current_price: float
+        current_pnl_percent: float
     ) -> List[ProfitLevel]:
         """
         Check which profit levels have been hit
         
         Args:
             trade_id: Trade identifier
-            current_price: Current market price
+            current_pnl_percent: Current P&L percentage
             
         Returns:
             List of ProfitLevel objects that should be executed
@@ -250,10 +149,12 @@ class ProfitManager:
             
             # Check if level triggered
             if plan.direction == "long":
-                if current_price >= level.trigger_price:
+                if current_pnl_percent >= level.trigger_percent:
+                    self.logger.info(f"✅ Level {level.level_num} triggered: PnL {current_pnl_percent:.2f}% >= {level.trigger_percent:.2f}%")
                     triggered_levels.append(level)
             else:  # short
-                if current_price <= level.trigger_price:
+                if current_pnl_percent >= level.trigger_percent:  # For shorts, PnL is already calculated correctly
+                    self.logger.info(f"✅ Level {level.level_num} triggered: PnL {current_pnl_percent:.2f}% >= {level.trigger_percent:.2f}%")
                     triggered_levels.append(level)
         
         return triggered_levels
@@ -279,16 +180,20 @@ class ProfitManager:
                 plan.remaining_size -= level.size
                 
                 profit = level.size * abs(filled_price - plan.entry_price)
-                self.logger.info(f"✅ Level {level_num} filled: {level.size:.6f} @ ${filled_price:.2f} (+${profit:.2f})")
-                self.logger.info(f"   Remaining position: {plan.remaining_size:.6f}")
+                self.logger.info(f"✅ Level {level_num} filled: {level.size:.4f} @ ${filled_price:.2f} (Profit: +${profit:.2f})")
+                self.logger.info(f"   Remaining position: {plan.remaining_size:.4f}")
                 break
+    
+    def has_plan(self, trade_id: str) -> bool:
+        """Check if a plan exists for this trade"""
+        return trade_id in self.active_plans
     
     def get_plan(self, trade_id: str) -> Optional[ScaledExitPlan]:
         """Get exit plan for a trade"""
         return self.active_plans.get(trade_id)
     
     def remove_plan(self, trade_id: str):
-        """Remove exit plan (trade closed)"""
+        """Remove exit plan (trade fully closed)"""
         if trade_id in self.active_plans:
             del self.active_plans[trade_id]
             self.logger.info(f"Removed exit plan for {trade_id}")
@@ -316,11 +221,7 @@ class ProfitManager:
             "remaining_size": plan.remaining_size,
             "levels_filled": levels_filled,
             "total_levels": len(plan.profit_levels),
-            "total_profit_locked": total_profit,
-            "runner_activated": plan.runner.activated,
-            "runner_size": plan.runner.size,
-            "highest_price": plan.runner.highest_price if plan.runner.activated else None,
-            "trailing_stop": plan.runner.current_trailing_stop if plan.runner.activated else None
+            "total_profit_locked": total_profit
         }
 
 
