@@ -542,6 +542,43 @@ class AdvancedTradingBot:
                     self.logger.info(f"🔍 Monitoring {current_count} open positions")
                     self._last_logged_count = current_count
                 
+                # ========================================
+                # PORTFOLIO USAGE CHECK (60% MAX)
+                # ========================================
+                # Check if portfolio exceeds 60% - close extra positions immediately
+                portfolio_heat = await self.risk_manager.calculate_portfolio_heat()
+                if portfolio_heat > 0.60:  # 60% max usage
+                    self.logger.error(f"🚨 PORTFOLIO OVERHEATED: {portfolio_heat:.1%} > 60%")
+                    self.logger.error(f"🛑 CLOSING EXTRA POSITIONS IMMEDIATELY!")
+                    
+                    # Close positions until we're under 60%
+                    # Sort by PnL - close losing positions first
+                    sorted_positions = sorted(
+                        [p for p in self.position_cache if p.is_open],
+                        key=lambda p: p.pnl_percentage
+                    )
+                    
+                    for position in sorted_positions:
+                        if portfolio_heat <= 0.60:
+                            break
+                        
+                        position_id = f"{position.market_id}_{position.size}"
+                        self.logger.warning(f"🔻 Closing position to reduce usage: {position_id} ({position.pnl_percentage:.2f}%)")
+                        
+                        # Close immediately
+                        success = await self.hybrid_exit_manager.close_position_hybrid(
+                            position=position,
+                            reason=f"Portfolio overheat: {portfolio_heat:.1%} > 60%",
+                            position_id=position_id
+                        )
+                        
+                        if success:
+                            self.logger.info(f"✅ Closed position {position_id} to reduce usage")
+                            # Recalculate portfolio heat
+                            portfolio_heat = await self.risk_manager.calculate_portfolio_heat()
+                        else:
+                            self.logger.error(f"❌ Failed to close position {position_id}")
+                
                 for position in self.position_cache:
                     if not position.is_open:
                         continue
@@ -888,7 +925,11 @@ class AdvancedTradingBot:
                 if (datetime.now() - self.last_strategy_run).seconds >= 5:
                     await self.run_strategies()
                 
-                # ADAPTIVE MONITORING: 1s when positions open (fast TP/SL), 5s when idle (save API calls)
+                # CRITICAL: ALWAYS run position monitoring (OCO or not)
+                # Bot logic is ALWAYS ACTIVE to handle:
+                # 1. Backup -2% stop loss if OCO fails
+                # 2. Portfolio overheat (>60%) immediate closes
+                # 3. Trailing stops and early exits
                 check_interval = 1 if self.has_open_positions else 5
                 if (datetime.now() - self.last_risk_check).total_seconds() >= check_interval:
                     # Fast check without excessive logging when positions are open

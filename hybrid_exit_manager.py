@@ -45,6 +45,28 @@ class HybridExitManager:
         if position_id in self.recently_closed:
             return False, None
         
+        # Check if this position has NO OCO (needs backup protection)
+        has_no_oco = position_id in self.order_manager.positions_without_oco
+        
+        if has_no_oco:
+            # ========================================
+            # BACKUP MODE: NO OCO - BOT MANAGES EVERYTHING
+            # ========================================
+            # This is the critical backup for when OCO creation fails
+            self.logger.warning(f"⚠️ Position {position_id} has NO OCO - backup monitoring active")
+            
+            # IMMEDIATE CLOSE at -2% (no OCO protection!)
+            if pnl_pct <= -settings.stop_loss_percent:
+                self.logger.error(f"🛑 BACKUP STOP-LOSS: {pnl_pct:.2f}% (NO OCO!)")
+                return True, f"BACKUP SL: {pnl_pct:.2f}% (NO OCO)"
+            
+            # Take-profit at +2% (since no OCO)
+            if pnl_pct >= 2.0:
+                self.logger.warning(f"💰 BACKUP TAKE-PROFIT: {pnl_pct:.2f}%")
+                return True, f"BACKUP TP: {pnl_pct:.2f}%"
+            
+            return False, None
+        
         # Check if OCO is active
         has_oco = position_id in self.order_manager.oco_orders
         trailing_active = self.trailing_active.get(position_id, False)

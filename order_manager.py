@@ -154,6 +154,9 @@ class OrderManager:
         
         # Hybrid mode: Track which positions have bot taking over
         self.trailing_active: Dict[str, bool] = {}  # position_id -> is_trailing_active
+        
+        # Track positions without OCO (need backup monitoring)
+        self.positions_without_oco: set = set()  # position_ids that need backup -2% close
     
     async def _get_next_client_order_index(self) -> int:
         """Get next client order index using persistent indexer"""
@@ -392,11 +395,22 @@ class OrderManager:
             })
             
             # 3. Update portfolio-level OCO using local positions
+            logger.info(f"🔧 Attempting to create portfolio OCO for position...")
             oco_success = await self.update_portfolio_oco(market_id=market_id, use_local=True)
             
             if not oco_success:
-                logger.warning("⚠️ Portfolio OCO update failed - bot will manage exits")
+                logger.error("❌ Portfolio OCO update FAILED!")
+                logger.error("⚠️ BACKUP PROTECTION ACTIVATED:")
+                logger.error("   - Bot will monitor position every 1 second")
+                logger.error("   - Automatic close at -2% (no exchange protection!)")
+                logger.error("   - Automatic close at +2% take profit")
+                # Mark this position as requiring backup monitoring
+                position_id = f"{market_id}_{size}_{entry_price}"
+                self.positions_without_oco.add(position_id)
+                logger.warning(f"⚠️ Position {position_id} added to backup monitoring list")
                 return True, None
+            
+            logger.info(f"✅ Portfolio OCO successfully created for position!")
             
             # 3. Return info about portfolio OCO
             oco_info = {
@@ -601,7 +615,9 @@ class OrderManager:
             logger.info(f"📥 OCO API Response: create_order={create_order_obj}, tx_hash={tx_hash_obj}, error={error_str}")
             
             if error_str:
-                logger.error(f"❌ Portfolio OCO creation failed: {error_str}")
+                logger.error(f"❌ Portfolio OCO creation FAILED: {error_str}")
+                logger.error(f"⚠️ CRITICAL: Positions are NOT protected by exchange OCO!")
+                logger.error(f"⚠️ Bot backup monitoring will handle -2% stop loss")
                 return False
             
             # 7. Track portfolio OCO
@@ -612,6 +628,12 @@ class OrderManager:
                 'avg_entry': avg_entry_price,
                 'total_size': total_size
             }
+            
+            logger.info(f"✅ Portfolio OCO SUCCESSFULLY Created!")
+            logger.info(f"   TP @ ${tp_price:.2f} (+{tp_pct}% PnL)")
+            logger.info(f"   SL @ ${sl_price:.2f} (-{sl_pct}% PnL)")
+            logger.info(f"   Total Size: {total_size:.4f}")
+            logger.info(f"   Exchange protection: ACTIVE ✅")
             
             logger.info(f"✅ Portfolio OCO Active: TP @ ${tp_price:.2f}, SL @ ${sl_price:.2f} for {total_size:.4f} size")
             return True

@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     position_size_percent: int = Field(default=7, validation_alias="POSITION_SIZE_PERCENT")  # REDUCED from 10% to 7%
     leverage: int = Field(default=5, validation_alias="LEVERAGE")  # 5x for 1m scalping
     stop_loss_percent: float = Field(default=2.0, validation_alias="STOP_LOSS_PERCENT")
-    max_collateral: int = Field(default=14, validation_alias="MAX_COLLATERAL")  # REDUCED from 50% to 14% (14% × 5x = 70% max usage)
+    max_collateral: int = Field(default=12, validation_alias="MAX_COLLATERAL")  # REDUCED from 14% to 12% (12% × 5x = 60% max usage)
     max_open_positions: int = Field(default=3, validation_alias="MAX_OPEN_POSITIONS")  # REDUCED from 5 to 3
     
     # Static Scaled Profit Taking (3 levels)
