@@ -30,9 +30,6 @@ from time_filter import is_trading_hours, get_trading_session
 from multi_timeframe import mtf_analyzer
 from institutional_pipeline import institutional_pipeline
 from hybrid_exit_manager import get_hybrid_exit_manager
-from indicators import TechnicalIndicators
-from metrics import bot_metrics
-from win_rate_tracker import win_rate_tracker
 from vwap_filter import vwap_filter  # Institution-grade entry filter
 
 
@@ -369,99 +366,13 @@ class AdvancedTradingBot:
         
         Focus: ETH-PERP, BTC-PERP, SOL-PERP
         Goal: 50 trades × 2% = 100% profit
-        """
-        try:
-            self.logger.info("🎯 TOP 3 HIGH-VOLUME SCANNER (2% QUICK EXIT)")
-            self.logger.info("="*70)
-            
-            # Get current positions
-            positions = await self.order_manager.get_positions()
-            open_positions = [pos for pos in positions if pos.is_open]
-            
-            # Get account info
-            account_info = await self.order_manager.get_account_info()
-            if isinstance(account_info, dict):
-                if 'accounts' in account_info and len(account_info['accounts']) > 0:
-                    balance = float(account_info['accounts'][0].get('collateral', 0))
-                else:
-                    balance = float(account_info.get('collateral', 0))
-            else:
-                balance = 0.0
-            
-            # Calculate portfolio heat
-            portfolio_heat = await self.risk_manager.calculate_portfolio_heat()
-            
-            self.logger.info(f"💰 Available Capital: ${balance:.2f}")
-            self.logger.info(f"📊 Portfolio Heat: {portfolio_heat:.1%}")
-            self.logger.info(f"🎯 Open Positions: {len(open_positions)}/3")
-            self.logger.info("="*70)
-            
-            # Scan top 3 tokens for opportunities
-            self.logger.info("🔍 SCANNING ETH, BTC, SOL FOR 2% OPPORTUNITIES...")
-            all_opportunities = await top3_scanner.scan_for_opportunities()
-            
-            if not all_opportunities:
-                self.logger.info("⏳ NO 2% QUICK EXIT SETUPS - WAITING FOR QUALITY SIGNALS")
-                self.logger.info(f"   Trading top 3: ETH-PERP, BTC-PERP, SOL-PERP")
-                return
-            
-            # Find first opportunity that we don't already have a position in
-            best_opportunity = None
-            for opp in all_opportunities:
-                existing_pos = next((pos for pos in open_positions if pos.market_id == opp.market_id), None)
-                if not existing_pos:
-                    best_opportunity = opp
-                    break
-            
-            if not best_opportunity:
-                self.logger.info(f"⏸️  Already in all available opportunities - monitoring {len(open_positions)} positions")
-                return
-            
-            # Check if we can open a new position (max 5)
-            if len(open_positions) >= settings.max_open_positions:
-                self.logger.info(f"⏸️  Max positions reached ({len(open_positions)}/{settings.max_open_positions}) - waiting for exits")
-                return
-            
-            # Display opportunity
-            self.logger.info(f"")
-            self.logger.info(f"🎯 BEST 2% OPPORTUNITY FOUND!")
-            self.logger.info(f"="*70)
-            self.logger.info(f"   Token: {best_opportunity.symbol}")
-            self.logger.info(f"   Direction: {best_opportunity.direction}")
-            self.logger.info(f"   Entry: ${best_opportunity.entry_price:.2f}")
-            # With 5x leverage, 2% PnL = 0.4% price move (2% / 5 = 0.4%)
-            price_move_pct = settings.profit_level_1_percent / settings.leverage / 100
-            target_price = best_opportunity.entry_price * (1 + price_move_pct if best_opportunity.direction == "LONG" else 1 - price_move_pct)
-            self.logger.info(f"   Target: +{settings.profit_level_1_percent}% PnL = ${target_price:.2f} ({price_move_pct*100:.2f}% price move with {settings.leverage}x leverage)")
-            stop_price = best_opportunity.entry_price * (1 - settings.stop_loss_percent/settings.leverage/100 if best_opportunity.direction == "LONG" else 1 + settings.stop_loss_percent/settings.leverage/100)
-            self.logger.info(f"   Stop: -{settings.stop_loss_percent}% PnL = ${stop_price:.2f}")
-            self.logger.info(f"   Quality Score: {best_opportunity.total_score:.2f}")
-            self.logger.info(f"   Confidence: {best_opportunity.confidence:.0%}")
-            self.logger.info(f"="*70)
-            
-            # Create signal
-            signal = Signal(
-                signal_type=SignalType.BUY if best_opportunity.direction == "LONG" else SignalType.SELL,
-                strength=best_opportunity.confidence,
-                price=best_opportunity.entry_price,
-                reason=f"Top3 2% Exit: {best_opportunity.symbol} (Score: {best_opportunity.total_score:.2f})",
-                timestamp=datetime.now()
-            )
-            
-            # Set market ID for order execution
-            self.market_data.market_id = best_opportunity.market_id
-            
-            # Execute the trade
-            success = await self.execute_signal(signal)
-            
-            if success:
-                self.logger.info(f"✅ 2% QUICK EXIT TRADE EXECUTED ON {best_opportunity.symbol}!")
-            else:
-                self.logger.info(f"❌ Failed to execute trade on {best_opportunity.symbol}")
         
-        except Exception as e:
-            self.logger.error(f"Error in top 3 strategy: {e}", exc_info=True)
-            self.alert_manager.alert_error(f"Top 3 strategy error: {e}")
+        NOTE: This feature requires top3_scanner module which is not yet implemented.
+        """
+        self.logger.warning("⚠️ TOP 3 HIGH-VOLUME MODE is not yet implemented")
+        self.logger.warning("⚠️ Please use single-market mode instead")
+        self.logger.info("Falling back to single-market strategy...")
+        await self._run_single_market_strategy()
     
     async def _run_single_market_strategy(self):
         """Traditional single-market trading strategy"""
@@ -805,10 +716,9 @@ class AdvancedTradingBot:
         # Check trading mode
         if settings.trading_symbol == "MULTI-TOP-3":
             self.logger.info("🎯 TOP 3 HIGH-VOLUME MODE DETECTED")
+            self.logger.warning("⚠️ Note: This mode is not yet fully implemented")
             self.logger.info("Focus: ETH-PERP, BTC-PERP, SOL-PERP for 2% quick exits")
-            # Initialize Top 3 scanner
-            await initialize_top3_scanner()
-            self.logger.info("✓ Top 3 High-Volume Scanner ready!")
+            # Top 3 scanner not yet implemented - will use single market mode
             market_id = 0  # Primary market (ETH-PERP)
             
         else:
