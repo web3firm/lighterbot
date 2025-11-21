@@ -402,100 +402,100 @@ class LighterBot:
             
             try:
                 symbol = signal['symbol']
-            side = signal['side']
-            entry_price = Decimal(str(signal['entry_price']))
-            size = Decimal(str(signal['size']))
-            leverage = signal['leverage']
-            sl_price = Decimal(str(signal['sl_price']))
-            tp_price = Decimal(str(signal['tp_price']))
-            
-            logger.info(f"🎯 Executing entry: {side.upper()} {symbol}")
-            logger.info(f"   Price: ${entry_price} | Size: {size} | Leverage: {leverage}x")
-            logger.info(f"   SL: ${sl_price} | TP: ${tp_price}")
-            
-            # Place OCO order using V2 native SDK (TRUE exchange-level OCO)
-            tx_hash = await self.order_manager.place_oco_order_native(
-                symbol=symbol,
-                side=side,
-                size=size,
-                entry_price=entry_price,
-                sl_price=sl_price,
-                tp_price=tp_price
-            )
-            
-            if tx_hash:
-                logger.info(f"✅ OCO order placed: {tx_hash}")
+                side = signal['side']
+                entry_price = Decimal(str(signal['entry_price']))
+                size = Decimal(str(signal['size']))
+                leverage = signal['leverage']
+                sl_price = Decimal(str(signal['sl_price']))
+                tp_price = Decimal(str(signal['tp_price']))
                 
-                # Wait for order fill confirmation
-                await asyncio.sleep(2)
+                logger.info(f"🎯 Executing entry: {side.upper()} {symbol}")
+                logger.info(f"   Price: ${entry_price} | Size: {size} | Leverage: {leverage}x")
+                logger.info(f"   SL: ${sl_price} | TP: ${tp_price}")
                 
-                # Get active orders to find SL order ID (V2 doesn't need symbol param)
-                orders = await self.order_manager.get_active_orders()
-                sl_order = next((o for o in orders if o.get('order_type') == 'stop_loss'), None)
+                # Place OCO order using V2 native SDK (TRUE exchange-level OCO)
+                tx_hash = await self.order_manager.place_oco_order_native(
+                    symbol=symbol,
+                    side=side,
+                    size=size,
+                    entry_price=entry_price,
+                    sl_price=sl_price,
+                    tp_price=tp_price
+                )
                 
-                # Create position record
-                position_id = f"pos_{int(datetime.now(timezone.utc).timestamp())}"
-                self.current_position = {
-                    'position_id': position_id,
-                    'symbol': symbol,
-                    'side': side,
-                    'entry_price': float(entry_price),
-                    'size': float(size),
-                    'leverage': leverage,
-                    'sl_price': float(sl_price),
-                    'tp_price': float(tp_price),
-                    'sl_order_id': sl_order['order_id'] if sl_order else None,
-                    'tx_hash': tx_hash,
-                    'strategy': signal['strategy'],
-                    'entry_time': datetime.now(timezone.utc).isoformat(),
-                    'signal': signal
-                }
-                
-                self.stats['positions_opened'] += 1
-                self.risk_manager.on_position_opened(self.current_position)
-                
-                # Enable trailing stop if configured
-                trailing_enabled = os.getenv('TRAILING_SL_ENABLED', 'false').lower() == 'true'
-                if trailing_enabled and sl_order:
-                    trail_percent = Decimal(os.getenv('TRAILING_SL_TRAIL_PCT', '2.0'))
-                    callback_distance = Decimal(os.getenv('TRAILING_SL_CALLBACK_PCT', '0.5'))
-                    activation_profit = Decimal(os.getenv('TRAILING_SL_ACTIVATION_PCT', '1.0'))
+                if tx_hash:
+                    logger.info(f"✅ OCO order placed: {tx_hash}")
                     
-                    position_size_base = int(size * Decimal('10000000'))  # Convert to base units
+                    # Wait for order fill confirmation
+                    await asyncio.sleep(2)
                     
-                    await self.trailing_manager.enable_trailing_stop(
-                        position_id=position_id,
-                        market_index=self.market_id,
-                        sl_order_index=sl_order['order_id'],
-                        position_side=side,
-                        entry_price=entry_price,
-                        current_sl_price=sl_price,
-                        position_size=position_size_base,
-                        trail_percent=trail_percent,
-                        callback_distance=callback_distance,
-                        activation_profit=activation_profit
-                    )
-                    logger.info(f"🔄 Trailing stop enabled: {trail_percent}% trail, activate at +{activation_profit}% profit")
-                
-                # Save trade entry to database
-                if self.db_manager:
-                    trade_data = {
-                        'trade_id': position_id,
+                    # Get active orders to find SL order ID (V2 doesn't need symbol param)
+                    orders = await self.order_manager.get_active_orders()
+                    sl_order = next((o for o in orders if o.get('order_type') == 'stop_loss'), None)
+                    
+                    # Create position record
+                    position_id = f"pos_{int(datetime.now(timezone.utc).timestamp())}"
+                    self.current_position = {
+                        'position_id': position_id,
                         'symbol': symbol,
-                        'strategy': signal.get('strategy', 'unknown'),
                         'side': side,
                         'entry_price': float(entry_price),
                         'size': float(size),
                         'leverage': leverage,
+                        'sl_price': float(sl_price),
+                        'tp_price': float(tp_price),
+                        'sl_order_id': sl_order['order_id'] if sl_order else None,
+                        'tx_hash': tx_hash,
+                        'strategy': signal['strategy'],
                         'entry_time': datetime.now(timezone.utc).isoformat(),
-                        'indicators': signal.get('indicators', {}),
-                        'ml_prediction': signal.get('ml_prediction'),
-                        'ml_confidence': signal.get('ml_confidence')
+                        'signal': signal
                     }
-                    await self.db_manager.insert_trade(trade_data)
-                
-                logger.info(f"✅ Position opened successfully with TRUE OCO")
-                
+                    
+                    self.stats['positions_opened'] += 1
+                    self.risk_manager.on_position_opened(self.current_position)
+                    
+                    # Enable trailing stop if configured
+                    trailing_enabled = os.getenv('TRAILING_SL_ENABLED', 'false').lower() == 'true'
+                    if trailing_enabled and sl_order:
+                        trail_percent = Decimal(os.getenv('TRAILING_SL_TRAIL_PCT', '2.0'))
+                        callback_distance = Decimal(os.getenv('TRAILING_SL_CALLBACK_PCT', '0.5'))
+                        activation_profit = Decimal(os.getenv('TRAILING_SL_ACTIVATION_PCT', '1.0'))
+                        
+                        position_size_base = int(size * Decimal('10000000'))  # Convert to base units
+                        
+                        await self.trailing_manager.enable_trailing_stop(
+                            position_id=position_id,
+                            market_index=self.market_id,
+                            sl_order_index=sl_order['order_id'],
+                            position_side=side,
+                            entry_price=entry_price,
+                            current_sl_price=sl_price,
+                            position_size=position_size_base,
+                            trail_percent=trail_percent,
+                            callback_distance=callback_distance,
+                            activation_profit=activation_profit
+                        )
+                        logger.info(f"🔄 Trailing stop enabled: {trail_percent}% trail, activate at +{activation_profit}% profit")
+                    
+                    # Save trade entry to database
+                    if self.db_manager:
+                        trade_data = {
+                            'trade_id': position_id,
+                            'symbol': symbol,
+                            'strategy': signal.get('strategy', 'unknown'),
+                            'side': side,
+                            'entry_price': float(entry_price),
+                            'size': float(size),
+                            'leverage': leverage,
+                            'entry_time': datetime.now(timezone.utc).isoformat(),
+                            'indicators': signal.get('indicators', {}),
+                            'ml_prediction': signal.get('ml_prediction'),
+                            'ml_confidence': signal.get('ml_confidence')
+                        }
+                        await self.db_manager.insert_trade(trade_data)
+                    
+                    logger.info(f"✅ Position opened successfully with TRUE OCO")
+                    
             except Exception as e:
                 logger.error(f"❌ Error executing entry: {e}")
     
