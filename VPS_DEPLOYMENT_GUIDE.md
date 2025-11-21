@@ -164,7 +164,11 @@ python -m app.bot
 # If successful, press Ctrl+C to stop
 ```
 
-### Step 9: Setup Systemd Service
+### Step 9: Setup Process Manager
+
+Choose **Option A (Systemd)** or **Option B (PM2)** - both work great!
+
+#### **Option A: Systemd Service (Traditional Linux)**
 
 ```bash
 # Create service file
@@ -213,6 +217,97 @@ sudo systemctl enable lighterbot
 sudo systemctl start lighterbot
 sudo systemctl status lighterbot
 ```
+
+#### **Option B: PM2 (Modern Process Manager) ⭐ Recommended**
+
+PM2 provides better monitoring, log management, and easier process control.
+
+**Install PM2:**
+```bash
+# Install Node.js (required for PM2)
+curl -fsSL https://deb.nodesource.com/setup_18.x | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Install PM2 globally
+sudo npm install -g pm2
+```
+
+**Create PM2 ecosystem file:**
+```bash
+cd /opt/lighterbot
+nano ecosystem.config.js
+```
+
+```javascript
+module.exports = {
+  apps: [{
+    name: 'lighterbot',
+    script: 'venv/bin/python',
+    args: '-m app.bot',
+    cwd: '/opt/lighterbot',
+    interpreter: 'none',
+    instances: 1,
+    autorestart: true,
+    watch: false,
+    max_memory_restart: '1G',
+    env: {
+      NODE_ENV: 'production'
+    },
+    error_file: 'logs/pm2-error.log',
+    out_file: 'logs/pm2-out.log',
+    log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+    merge_logs: true,
+    restart_delay: 10000
+  }]
+};
+```
+
+**Start with PM2:**
+```bash
+# Start bot
+pm2 start ecosystem.config.js
+
+# Save PM2 configuration
+pm2 save
+
+# Setup PM2 to start on boot
+pm2 startup systemd -u lighterbot --hp /home/lighterbot
+# Run the command that PM2 outputs
+
+# Check status
+pm2 status
+
+# View logs
+pm2 logs lighterbot
+
+# Monitor
+pm2 monit
+```
+
+**PM2 Commands:**
+```bash
+pm2 start lighterbot      # Start
+pm2 stop lighterbot       # Stop
+pm2 restart lighterbot    # Restart
+pm2 reload lighterbot     # Zero-downtime reload
+pm2 delete lighterbot     # Remove from PM2
+pm2 logs lighterbot       # View logs
+pm2 logs lighterbot --lines 100  # Last 100 lines
+pm2 monit                 # Real-time monitoring
+pm2 status                # Status of all apps
+pm2 describe lighterbot   # Detailed info
+pm2 flush                 # Clear all logs
+```
+
+**Why PM2 is Great:**
+- ✅ Built-in monitoring dashboard
+- ✅ Automatic log rotation
+- ✅ Easy log viewing (`pm2 logs`)
+- ✅ Process metrics (CPU, memory)
+- ✅ Cluster mode support
+- ✅ Zero-downtime reloads
+- ✅ Web dashboard available (PM2 Plus)
+- ✅ Cross-platform (works on Windows too)
 
 ### Step 10: Setup Log Rotation
 
@@ -304,6 +399,7 @@ Add line:
 
 ### Start/Stop/Restart
 
+**If using Systemd:**
 ```bash
 # Start
 sudo systemctl start lighterbot
@@ -318,8 +414,27 @@ sudo systemctl restart lighterbot
 sudo systemctl status lighterbot
 ```
 
+**If using PM2:**
+```bash
+# Start
+pm2 start lighterbot
+
+# Stop
+pm2 stop lighterbot
+
+# Restart
+pm2 restart lighterbot
+
+# Status
+pm2 status
+
+# Live monitoring
+pm2 monit
+```
+
 ### View Logs
 
+**If using Systemd:**
 ```bash
 # Real-time logs
 sudo journalctl -u lighterbot -f
@@ -334,8 +449,24 @@ tail -f /var/log/lighterbot/error.log
 sudo journalctl -u lighterbot -n 100
 ```
 
+**If using PM2:**
+```bash
+# Real-time logs
+pm2 logs lighterbot
+
+# Last 100 lines
+pm2 logs lighterbot --lines 100
+
+# Only errors
+pm2 logs lighterbot --err
+
+# Clear logs
+pm2 flush lighterbot
+```
+
 ### Update Bot
 
+**If using Systemd:**
 ```bash
 # Stop service
 sudo systemctl stop lighterbot
@@ -351,14 +482,34 @@ sudo -u lighterbot bash -c "source venv/bin/activate && pip install -r requireme
 sudo systemctl start lighterbot
 ```
 
+**If using PM2:**
+```bash
+# Stop bot
+pm2 stop lighterbot
+
+# Update code
+cd /opt/lighterbot
+git pull
+
+# Install new dependencies (if any)
+source venv/bin/activate && pip install -r requirements.txt
+
+# Restart with zero downtime
+pm2 reload lighterbot
+```
+
 ### Configuration Changes
 
 ```bash
 # Edit .env
-sudo nano /opt/lighterbot/.env
+nano /opt/lighterbot/.env
 
 # Restart to apply changes
+# If using Systemd:
 sudo systemctl restart lighterbot
+
+# If using PM2:
+pm2 restart lighterbot
 ```
 
 ---
@@ -675,27 +826,35 @@ sudo systemctl start lighterbot-btc
 
 ## Quick Reference
 
+### Systemd Commands
 ```bash
-# Start bot
-sudo systemctl start lighterbot
+sudo systemctl start lighterbot      # Start
+sudo systemctl stop lighterbot       # Stop
+sudo systemctl restart lighterbot    # Restart
+sudo systemctl status lighterbot     # Status
+sudo journalctl -u lighterbot -f     # Logs
+```
 
-# Stop bot
-sudo systemctl stop lighterbot
+### PM2 Commands
+```bash
+pm2 start lighterbot        # Start
+pm2 stop lighterbot         # Stop
+pm2 restart lighterbot      # Restart
+pm2 reload lighterbot       # Zero-downtime restart
+pm2 status                  # Status
+pm2 logs lighterbot         # Logs
+pm2 monit                   # Live monitoring
+pm2 save                    # Save configuration
+```
 
-# Restart bot
-sudo systemctl restart lighterbot
-
-# View logs
-sudo journalctl -u lighterbot -f
-
-# Check status
-sudo systemctl status lighterbot
-
+### Common Tasks
+```bash
 # Update bot
-cd /opt/lighterbot && git pull && sudo systemctl restart lighterbot
+cd /opt/lighterbot && git pull
+# Then restart with systemctl or pm2
 
 # Edit config
-sudo nano /opt/lighterbot/.env
+nano /opt/lighterbot/.env
 
 # Monitor resources
 htop
