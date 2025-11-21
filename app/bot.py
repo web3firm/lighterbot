@@ -575,6 +575,14 @@ class LighterBot:
             if position_id and self.trailing_manager:
                 self.trailing_manager.disable_trailing_stop(position_id)
             
+            # Cancel remaining OCO orders (TP/SL that didn't fill)
+            if self.order_manager:
+                try:
+                    await self.order_manager.cancel_all_orders()
+                    logger.info("✅ Cancelled remaining TP/SL orders")
+                except Exception as e:
+                    logger.warning(f"⚠️  Failed to cancel orders: {e}")
+            
             # Get current position data from exchange for actual PnL
             positions = await self.lighter_client.get_positions()
             actual_pnl = Decimal('0')
