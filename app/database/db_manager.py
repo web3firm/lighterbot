@@ -4,6 +4,7 @@ Handles all database interactions with AsyncPG
 """
 
 import logging
+import json
 import asyncpg
 import os
 from typing import Dict, Any, Optional, List
@@ -93,8 +94,8 @@ class DatabaseManager:
                     trade_data['entry_price'],
                     trade_data['size'],
                     trade_data['leverage'],
-                    datetime.fromisoformat(trade_data['entry_time'].replace('Z', '+00:00')),
-                    trade_data.get('indicators'),
+                    datetime.fromisoformat(trade_data['entry_time'].replace('Z', '+00:00')).replace(tzinfo=None),
+                    json.dumps(trade_data.get('indicators')) if trade_data.get('indicators') else None,
                     trade_data.get('ml_prediction'),
                     trade_data.get('ml_confidence')
                 )
@@ -122,7 +123,7 @@ class DatabaseManager:
                     WHERE trade_id = $8
                 """,
                     exit_data['exit_price'],
-                    datetime.fromisoformat(exit_data['exit_time'].replace('Z', '+00:00')),
+                    datetime.fromisoformat(exit_data['exit_time'].replace('Z', '+00:00')).replace(tzinfo=None),
                     exit_data['pnl_usd'],
                     exit_data['pnl_pct'],
                     exit_data.get('fees_usd', 0),

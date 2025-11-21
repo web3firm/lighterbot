@@ -27,7 +27,7 @@ async def test_database_storage():
     # Initialize database manager
     print("\n1️⃣  Connecting to database...")
     try:
-        db_manager = DatabaseManager(db_url)
+        db_manager = DatabaseManager()
         await db_manager.connect()
         print("✅ Connected successfully")
     except Exception as e:
