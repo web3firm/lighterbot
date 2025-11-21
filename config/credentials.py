@@ -72,8 +72,8 @@ class Credentials:
         if not self.lighter_private_key:
             errors.append("LIGHTER_PRIVATE_KEY not set")
         
-        if not self.lighter_account_address:
-            errors.append("LIGHTER_ACCOUNT_ADDRESS not set")
+        if not self.lighter_api_url:
+            errors.append("LIGHTER_API_URL not set")
         
         if not self.telegram_bot_token:
             errors.append("TELEGRAM_BOT_TOKEN not set (required for notifications)")

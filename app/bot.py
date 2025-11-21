@@ -96,7 +96,7 @@ class LighterBot:
             
             # Initialize Lighter client
             self.lighter_client = LighterClient(
-                api_url=os.getenv('LIGHTER_API_URL', 'https://mainnet.zklighter.elliot.ai'),
+                api_url=os.getenv('LIGHTER_API_URL'),
                 api_private_key=os.getenv('LIGHTER_API_PRIVATE_KEY'),
                 api_key_index=int(os.getenv('LIGHTER_API_KEY_INDEX', '0')),
                 account_index=int(os.getenv('LIGHTER_ACCOUNT_INDEX', '0'))
@@ -109,7 +109,7 @@ class LighterBot:
             
             # Initialize WebSocket (Native SDK)
             self.websocket = LighterWebSocket(
-                api_url=os.getenv('LIGHTER_API_URL', 'https://mainnet.zklighter.elliot.ai'),
+                api_url=os.getenv('LIGHTER_API_URL'),
                 account_index=int(os.getenv('LIGHTER_ACCOUNT_INDEX', '0'))
             )
             logger.info("✅ WebSocket initialized (Native SDK)")
@@ -361,16 +361,17 @@ class LighterBot:
             
             self.stats['signals_accepted'] += 1
             
-            # Final check: ensure no position before executing
+            # CRITICAL: Strict position limit check - ONLY 1 position at a time
             if self.current_position:
-                logger.warning("⚠️  Position already exists, skipping entry")
+                logger.warning("⚠️  Position already exists - STRICT LIMIT: Only 1 position allowed")
                 return
             
-            # Check cooldown after last position close
+            # Check cooldown after last position close (prevents rapid re-entry)
             if self.last_position_close_time:
                 time_since_close = (datetime.now(timezone.utc) - self.last_position_close_time).total_seconds()
                 if time_since_close < self.position_cooldown_seconds:
-                    logger.info(f"⏳ Position cooldown: {self.position_cooldown_seconds - time_since_close:.0f}s remaining")
+                    logger.info(f"⏳ Position cooldown active: {self.position_cooldown_seconds - time_since_close:.0f}s remaining")
+                    logger.debug(f"   Last position closed at: {self.last_position_close_time}")
                     return
             
             # Execute entry
