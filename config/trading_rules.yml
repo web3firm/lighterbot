@@ -1,0 +1,182 @@
+# ═══════════════════════════════════════════════════════════
+# LighterBot Trading Rules Configuration
+# ═══════════════════════════════════════════════════════════
+
+# ─────────────────────────────────────────────────────────────
+# ⚙️ CORE SETTINGS
+# ─────────────────────────────────────────────────────────────
+loop_interval: 1.0                    # Main loop interval (seconds)
+close_positions_on_shutdown: true     # Auto-close positions on shutdown
+
+# ─────────────────────────────────────────────────────────────
+# 🎯 STRATEGY CONFIGURATION
+# ─────────────────────────────────────────────────────────────
+strategies:
+  # Swing Trading (70% allocation)
+  swing_trader:
+    enabled: true
+    allocation: 0.70
+    leverage: 5
+    tp_pct: 15.0                      # 15% PnL target
+    sl_pct: 5.0                       # 5% PnL stop
+    position_size_pct: 50.0
+    rsi_oversold: 30
+    rsi_overbought: 70
+    min_adx: 25
+    min_signal_score: 5               # Out of 8
+  
+  # Scalping (30% allocation)
+  scalping_2pct:
+    enabled: true
+    allocation: 0.30
+    leverage: 5
+    tp_pct: 2.0                       # 2% PnL target
+    sl_pct: 1.0                       # 1% PnL stop
+    position_size_pct: 70.0
+    min_momentum_threshold: 0.003     # 0.3%
+  
+  # Breakout (experimental)
+  breakout:
+    enabled: false
+    allocation: 0.00
+    leverage: 5
+    lookback_period: 20
+    min_breakout_pct: 0.05
+  
+  # Mean Reversion (experimental)
+  mean_reversion:
+    enabled: false
+    allocation: 0.00
+    leverage: 5
+    deviation_threshold: 0.003
+    sma_period: 20
+  
+  # Volume Spike (experimental)
+  volume_spike:
+    enabled: false
+    allocation: 0.00
+    leverage: 5
+    min_volume_ratio: 2.0
+
+# ─────────────────────────────────────────────────────────────
+# 🛡️ RISK MANAGEMENT
+# ─────────────────────────────────────────────────────────────
+risk:
+  # Position limits
+  max_position_size_pct: 70.0         # Max % of balance per trade
+  max_positions: 1                    # Max concurrent positions
+  max_leverage: 5
+  
+  # Loss limits
+  max_daily_loss_pct: 5.0             # Kill switch trigger
+  max_drawdown_pct: 10.0              # Max drawdown from peak
+  
+  # Trailing stops
+  trailing_stop_enabled: true
+  trailing_stop_activation_pct: 7.0   # Activate at +7% PnL
+  trailing_stop_distance_pct: 3.0     # Trail 3% behind peak
+  
+  # Correlation limits
+  max_correlation: 0.7                # Avoid correlated positions
+
+# ─────────────────────────────────────────────────────────────
+# 📊 EXECUTION SETTINGS
+# ─────────────────────────────────────────────────────────────
+execution:
+  order_type: market                  # market, limit
+  default_slippage_limit: 0.005       # 0.5%
+  max_order_attempts: 3
+  order_timeout: 30                   # seconds
+  
+  # OCO orders
+  use_oco_orders: true
+  
+  # Rate limiting
+  max_orders_per_minute: 10
+
+# ─────────────────────────────────────────────────────────────
+# 📈 INDICATORS
+# ─────────────────────────────────────────────────────────────
+indicators:
+  rsi_period: 14
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal: 9
+  ema_fast: 21
+  ema_slow: 50
+  bb_period: 20
+  bb_std: 2
+  adx_period: 14
+  atr_period: 14
+  volume_ma_period: 20
+
+# ─────────────────────────────────────────────────────────────
+# 🤖 ML CONFIGURATION
+# ─────────────────────────────────────────────────────────────
+ml:
+  enabled: true
+  min_trades_for_training: 1000       # V1 → V2 transition
+  auto_train: true
+  retrain_interval: 86400             # 24 hours
+  model_type: random_forest
+  features:
+    - rsi
+    - macd
+    - ema_fast
+    - ema_slow
+    - bb_position
+    - adx
+    - atr
+    - volume_ratio
+    - price_change_1h
+    - price_change_4h
+    - price_change_24h
+
+# ─────────────────────────────────────────────────────────────
+# 📝 LOGGING
+# ─────────────────────────────────────────────────────────────
+logging:
+  level: INFO
+  console_output: true
+  file_output: true
+  trade_log_format: jsonl             # JSON lines format
+  
+  # Trade logging
+  log_trades: true
+  log_signals: true
+  log_orders: true
+  log_risk_checks: true
+
+# ─────────────────────────────────────────────────────────────
+# 📊 MONITORING
+# ─────────────────────────────────────────────────────────────
+monitoring:
+  telegram_enabled: true
+  
+  # Notification thresholds
+  notify_on_trade: true
+  notify_on_position_close: true
+  notify_on_daily_pnl_pct: 2.0        # Notify at ±2% daily PnL
+  notify_on_kill_switch: true
+  notify_on_ml_training: true
+  
+  # Health checks
+  heartbeat_interval: 300             # 5 minutes
+  
+# ─────────────────────────────────────────────────────────────
+# 🗄️ DATABASE
+# ─────────────────────────────────────────────────────────────
+database:
+  enabled: true
+  connection_pool_size: 5
+  connection_timeout: 30
+  
+  # Tables
+  tables:
+    - trades
+    - signals
+    - ml_predictions
+    - positions
+    - funding_payments
+    - performance_metrics
+    - bot_state
