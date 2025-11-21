@@ -68,7 +68,8 @@ class LighterBot:
         self.account_state: Dict[str, Any] = {}
         self.current_position: Optional[Dict[str, Any]] = None
         self.last_position_close_time: Optional[datetime] = None
-        self.position_cooldown_seconds = int(os.getenv('POSITION_COOLDOWN_SECONDS', '30'))  # Wait N seconds after close before new entry
+        self.position_cooldown_seconds = int(os.getenv('POSITION_COOLDOWN_SECONDS', '300'))  # Default 5 minutes cooldown
+        self.min_position_duration = 60  # Minimum 60 seconds before position can close (prevent instant close bug)
         
         # Statistics
         self.stats = {
@@ -540,6 +541,20 @@ class LighterBot:
         try:
             if not self.current_position:
                 return
+            
+            # Check if position was open long enough (prevent instant close bug)
+            entry_time_str = self.current_position.get('entry_time')
+            if entry_time_str:
+                entry_time = datetime.fromisoformat(entry_time_str)
+                position_duration = (datetime.now(timezone.utc) - entry_time).total_seconds()
+                
+                if position_duration < self.min_position_duration:
+                    logger.warning(f"⚠️  Position closed too quickly ({position_duration:.0f}s) - possible exchange bug")
+                    logger.warning(f"   Increasing cooldown to 5 minutes to prevent rapid open-close loop")
+                    # Don't clear position immediately, let it be handled on next cycle
+                    self.last_position_close_time = datetime.now(timezone.utc)
+                    self.current_position = None
+                    return
             
             symbol = self.current_position['symbol']
             position_id = self.current_position.get('position_id')
