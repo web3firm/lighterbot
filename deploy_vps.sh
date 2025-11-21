@@ -18,7 +18,7 @@ NC='\033[0m' # No Color
 APP_DIR="/opt/lighterbot"
 SERVICE_NAME="lighterbot"
 LOG_DIR="/var/log/lighterbot"
-PYTHON_VERSION="3.9"
+PYTHON_VERSION=""  # Auto-detect
 
 ################################################################################
 # Helper Functions
@@ -100,13 +100,33 @@ install_dependencies() {
     print_info "Updating package list..."
     apt-get update -qq
     
-    # Install required packages
-    print_info "Installing required packages..."
+    # Detect available Python version (prefer 3.11, 3.10, 3.9, fallback to python3)
+    print_info "Detecting Python version..."
+    if apt-cache show python3.11 >/dev/null 2>&1; then
+        PYTHON_VERSION="3.11"
+    elif apt-cache show python3.10 >/dev/null 2>&1; then
+        PYTHON_VERSION="3.10"
+    elif apt-cache show python3.9 >/dev/null 2>&1; then
+        PYTHON_VERSION="3.9"
+    else
+        PYTHON_VERSION="3"
+    fi
+    print_info "Using Python ${PYTHON_VERSION}"
+    
+    # Install Python and development tools
+    if [ "$PYTHON_VERSION" = "3" ]; then
+        apt-get install -y python3 python3-venv python3-dev python3-pip
+    else
+        apt-get install -y \
+            python${PYTHON_VERSION} \
+            python${PYTHON_VERSION}-venv \
+            python${PYTHON_VERSION}-dev \
+            python3-pip
+    fi
+    
+    # Install other required packages
+    print_info "Installing system packages..."
     apt-get install -y \
-        python${PYTHON_VERSION} \
-        python${PYTHON_VERSION}-venv \
-        python${PYTHON_VERSION}-dev \
-        python3-pip \
         git \
         curl \
         build-essential \
@@ -182,10 +202,17 @@ setup_python_env() {
     
     cd $APP_DIR
     
+    # Determine Python command
+    if [ "$PYTHON_VERSION" = "3" ]; then
+        PYTHON_CMD="python3"
+    else
+        PYTHON_CMD="python${PYTHON_VERSION}"
+    fi
+    
     # Create virtual environment
     if [ ! -d "venv" ]; then
-        print_info "Creating virtual environment..."
-        sudo -u lighterbot python${PYTHON_VERSION} -m venv venv
+        print_info "Creating virtual environment with $PYTHON_CMD..."
+        sudo -u lighterbot $PYTHON_CMD -m venv venv
     else
         print_info "Virtual environment already exists"
     fi

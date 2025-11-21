@@ -68,10 +68,17 @@ apt update && apt upgrade -y
 ### Step 3: Install Dependencies
 
 ```bash
-# Install Python 3.9+
-apt install -y python3.9 python3.9-venv python3.9-dev python3-pip
+# Check available Python version
+python3 --version
 
-# Install Git
+# Install Python (use whatever version is available: 3.9, 3.10, 3.11, etc.)
+# For Ubuntu 22.04+:
+apt install -y python3 python3-venv python3-dev python3-pip
+
+# OR if specific version available:
+# apt install -y python3.11 python3.11-venv python3.11-dev python3-pip
+
+# Install Git and build tools
 apt install -y git curl build-essential
 
 # Install system tools
@@ -103,11 +110,14 @@ git clone https://github.com/web3firm/lighterbot.git .
 ### Step 6: Setup Python Environment
 
 ```bash
-# Create virtual environment
-python3.9 -m venv venv
+# Create virtual environment (use python3 or python3.11 depending on your system)
+python3 -m venv venv
 
 # Activate environment
 source venv/bin/activate
+
+# Verify Python version (should be 3.9 or higher)
+python --version
 
 # Install dependencies
 pip install --upgrade pip
