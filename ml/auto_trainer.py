@@ -2,7 +2,7 @@
 ML Auto-Trainer - Automatic model training when trade count reaches threshold
 Implements V1 (collection) → V2 (ML predictions) transition
 
-V1 Phase: Collect 1000+ trades to data/trades/ directory
+V1 Phase: Collect 1000+ trades to PostgreSQL database
 V2 Phase: Train RandomForest model and activate ML predictions
 """
 
@@ -17,6 +17,8 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, classification_report
 import joblib
+import os
+import asyncpg
 
 logger = logging.getLogger(__name__)
 
@@ -29,24 +31,24 @@ class AutoTrainer:
     Phase 2 (V2): Trains model and activates predictions
     """
     
-    def __init__(self, min_trades: int = 1000, retrain_interval: int = 86400):
+    def __init__(self, db_url: Optional[str] = None, min_trades: int = 1000, retrain_interval: int = 86400):
         """
         Initialize auto-trainer
         
         Args:
+            db_url: PostgreSQL database URL (required for V2)
             min_trades: Minimum trades before first training (default: 1000)
             retrain_interval: Seconds between retraining (default: 86400 = 24h)
         """
+        self.db_url = db_url or os.getenv('DATABASE_URL')
         self.min_trades = min_trades
         self.retrain_interval = retrain_interval
         
         # Paths
-        self.trades_dir = Path("data/trades")
         self.models_dir = Path("ml/models")
         self.dataset_dir = Path("data/model_dataset")
         
         # Ensure directories exist
-        self.trades_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.dataset_dir.mkdir(parents=True, exist_ok=True)
         
@@ -58,7 +60,7 @@ class AutoTrainer:
         # Load existing model if available
         self._load_existing_model()
         
-        logger.info(f"🤖 ML Auto-Trainer initialized")
+        logger.info(f"🤖 ML Auto-Trainer initialized (PostgreSQL mode)")
         logger.info(f"   Min trades for training: {self.min_trades}")
         logger.info(f"   Retrain interval: {self.retrain_interval}s ({self.retrain_interval/3600:.1f}h)")
         logger.info(f"   Current phase: {'V2 (ML Active)' if self.model_trained else 'V1 (Collection)'}")
@@ -120,17 +122,24 @@ class AutoTrainer:
         return False
     
     def _count_trades(self) -> int:
-        """Count total trades across all log files"""
-        total = 0
+        """Count completed trades in database (trades with exit_time)"""
+        if not self.db_url:
+            logger.warning("No database URL configured")
+            return 0
         
-        for trade_file in self.trades_dir.glob("trades_*.jsonl"):
-            try:
-                with open(trade_file, 'r') as f:
-                    total += sum(1 for _ in f)
-            except Exception as e:
-                logger.error(f"Error reading {trade_file}: {e}")
-        
-        return total
+        try:
+            # Use sync connection for simple count
+            import psycopg2
+            conn = psycopg2.connect(self.db_url)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM trades WHERE exit_time IS NOT NULL")
+            total = cur.fetchone()[0]
+            cur.close()
+            conn.close()
+            return total
+        except Exception as e:
+            logger.error(f"Error counting trades: {e}")
+            return 0
     
     async def train_model(self) -> bool:
         """
@@ -200,26 +209,48 @@ class AutoTrainer:
             return False
     
     def _load_all_trades(self) -> List[Dict[str, Any]]:
-        """Load all trades from JSONL files"""
-        trades = []
+        """Load all completed trades from database"""
+        if not self.db_url:
+            logger.warning("No database URL configured")
+            return []
         
-        for trade_file in sorted(self.trades_dir.glob("trades_*.jsonl")):
-            try:
-                with open(trade_file, 'r') as f:
-                    for line in f:
-                        try:
-                            trade = json.loads(line.strip())
-                            trades.append(trade)
-                        except json.JSONDecodeError:
-                            continue
-            except Exception as e:
-                logger.error(f"Error loading {trade_file}: {e}")
-        
-        return trades
+        try:
+            import psycopg2
+            import psycopg2.extras
+            
+            conn = psycopg2.connect(self.db_url)
+            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            
+            # Query completed trades with all data
+            cur.execute("""
+                SELECT 
+                    trade_id, symbol, strategy, side,
+                    entry_price, exit_price, size, leverage,
+                    entry_time, exit_time,
+                    pnl_usd, pnl_pct,
+                    indicators, ml_prediction, ml_confidence
+                FROM trades 
+                WHERE exit_time IS NOT NULL
+                ORDER BY entry_time
+            """)
+            
+            trades = []
+            for row in cur.fetchall():
+                trades.append(dict(row))
+            
+            cur.close()
+            conn.close()
+            
+            logger.info(f"Loaded {len(trades)} completed trades from database")
+            return trades
+            
+        except Exception as e:
+            logger.error(f"Error loading trades: {e}")
+            return []
     
     async def _build_dataset(self, trades: List[Dict[str, Any]]) -> pd.DataFrame:
         """
-        Build feature dataset from trades
+        Build feature dataset from completed trades
         
         Features extracted:
         - RSI, MACD, EMA, ADX, ATR
@@ -232,37 +263,53 @@ class AutoTrainer:
         """
         rows = []
         
+        logger.info(f"   Processing {len(trades)} completed trades")
+        
         for trade in trades:
-            # Extract features from trade
+            # Extract indicators (stored as JSONB in database)
+            indicators = trade.get('indicators', {})
+            if isinstance(indicators, str):
+                indicators = json.loads(indicators)
+            
+            # Extract features
             row = {
-                # Technical indicators (from signal)
-                'rsi': trade.get('indicators', {}).get('rsi', 50),
-                'macd': trade.get('indicators', {}).get('macd', 0),
-                'ema_fast': trade.get('indicators', {}).get('ema_fast', 0),
-                'ema_slow': trade.get('indicators', {}).get('ema_slow', 0),
-                'adx': trade.get('indicators', {}).get('adx', 25),
-                'atr': trade.get('indicators', {}).get('atr', 1.0),
-                'bb_position': trade.get('indicators', {}).get('bb_position', 0.5),
+                # Technical indicators
+                'rsi': indicators.get('rsi', 50),
+                'macd': indicators.get('macd', {}).get('histogram', 0) if isinstance(indicators.get('macd'), dict) else indicators.get('macd', 0),
+                'ema_fast': indicators.get('ema_fast', 0),
+                'ema_slow': indicators.get('ema_slow', 0),
+                'adx': indicators.get('adx', 25),
+                'atr': indicators.get('atr', 1.0),
+                'bb_position': indicators.get('bb_position', 0.5),
                 
                 # Volume
-                'volume_ratio': trade.get('indicators', {}).get('volume_ratio', 1.0),
+                'volume_ratio': indicators.get('volume_ratio', 1.0),
                 
                 # Price changes
-                'price_change_1h': trade.get('price_change_1h', 0),
-                'price_change_4h': trade.get('price_change_4h', 0),
-                'price_change_24h': trade.get('price_change_24h', 0),
+                'price_change_1h': indicators.get('price_change_1h', 0),
+                'price_change_4h': indicators.get('price_change_4h', 0),
+                'price_change_24h': indicators.get('price_change_24h', 0),
                 
                 # Signal info
-                'signal_strength': trade.get('signal_strength', 0),
+                'signal_strength': indicators.get('signal_strength', 5),
                 'strategy': trade.get('strategy', 'unknown'),
+                'leverage': trade.get('leverage', 1),
                 
                 # Target: Did trade make profit?
-                'profitable': 1 if trade.get('pnl_pct', 0) > 0 else 0
+                'profitable': 1 if trade.get('pnl_usd', 0) > 0 else 0,
+                'pnl_pct': trade.get('pnl_pct', 0)
             }
             
             rows.append(row)
         
         df = pd.DataFrame(rows)
+        
+        if df.empty:
+            logger.warning("⚠️  No trades available for training")
+            return df
+        
+        logger.info(f"   Built {len(df)} trade samples")
+        logger.info(f"   Profitable trades: {df['profitable'].sum()} ({df['profitable'].mean()*100:.1f}%)")
         
         # Convert strategy to numeric
         strategy_map = {'swing_trader': 0, 'scalping_2pct': 1, 'breakout': 2, 'mean_reversion': 3, 'volume_spike': 4}

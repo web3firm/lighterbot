@@ -19,13 +19,26 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## 4. Configure environment
+## 4. Set up PostgreSQL database
+```bash
+# Install PostgreSQL (if not installed)
+sudo apt update && sudo apt install postgresql postgresql-contrib
+
+# Create database
+sudo -u postgres createdb lighterbot
+
+# Initialize schema
+psql postgresql://postgres@localhost/lighterbot < app/database/schema.sql
+```
+
+## 5. Configure environment
 ```bash
 cp .env.example .env
 nano .env  # Edit with your API keys
 ```
+**Required**: Add `DATABASE_URL=postgresql://postgres@localhost/lighterbot`
 
-## 5. Run it!
+## 6. Run it!
 ```bash
 python -m app.bot
 ```
@@ -75,6 +88,7 @@ pm2 stop lighterbot
 
 ## Configuration
 Edit `.env` file with your credentials:
+- `DATABASE_URL` - PostgreSQL connection (REQUIRED)
 - `LIGHTER_API_PRIVATE_KEY` - Your Lighter Protocol private key
 - `TRADING_SYMBOL` - ETH-USD (default)
 - `MAX_LEVERAGE` - 5 (recommended)

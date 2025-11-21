@@ -1,6 +1,6 @@
 """
-Trading Logger - Structured logging for all trading operations
-Logs to console, files, and JSONL for ML training
+Trading Logger - Structured logging for trading operations
+Logs to console and files (trade storage handled by DatabaseManager)
 """
 
 import logging
@@ -29,7 +29,7 @@ class DecimalEncoder(json.JSONEncoder):
 class TradingLogger:
     """
     Enterprise trading logger with structured logging
-    Logs to console, files, and JSONL for ML training
+    Logs to console and files (trade storage handled by DatabaseManager)
     """
     
     def __init__(self, log_dir: str = "logs", component_name: str = "LighterBot"):
@@ -49,13 +49,8 @@ class TradingLogger:
         # Setup file handlers
         self._setup_file_handlers()
         
-        # Trade log path (JSONL format for ML training)
-        self.trade_log_dir = Path("data/trades")
-        self.trade_log_dir.mkdir(parents=True, exist_ok=True)
-        
         self.logger.info(f"📝 Trading Logger initialized")
         self.logger.info(f"   Log directory: {self.log_dir}")
-        self.logger.info(f"   Trade logs: {self.trade_log_dir}")
     
     def _setup_file_handlers(self):
         """Setup file handlers for different log levels"""
@@ -97,27 +92,23 @@ class TradingLogger:
     
     def log_trade_entry(self, trade_data: Dict[str, Any]):
         """
-        Log trade entry to JSONL file for ML training
+        Log trade entry (to be saved to database by bot)
+        This is now a placeholder - actual storage handled by DatabaseManager
         
         Args:
             trade_data: Complete trade data including entry, indicators, etc.
         """
-        try:
-            date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-            trade_file = self.trade_log_dir / f"trades_{date_str}.jsonl"
-            
-            # Add timestamp if not present
-            if 'timestamp' not in trade_data:
-                trade_data['timestamp'] = datetime.now(timezone.utc).isoformat()
-            
-            # Append to JSONL file
-            with open(trade_file, 'a') as f:
-                f.write(json.dumps(trade_data, cls=DecimalEncoder) + '\n')
-            
-            self.logger.info(f"💾 Trade logged to {trade_file.name}")
-            
-        except Exception as e:
-            self.logger.error(f"❌ Failed to log trade: {e}")
+        self.logger.info(f"📊 Trade entry prepared for database storage")
+    
+    def log_trade_exit(self, trade_data: Dict[str, Any]):
+        """
+        Log trade exit (to be saved to database by bot)
+        This is now a placeholder - actual storage handled by DatabaseManager
+        
+        Args:
+            trade_data: Complete exit data including PnL, exit price, etc.
+        """
+        self.logger.info(f"📊 Trade exit prepared for database storage")
     
     def log_order_placed(self, symbol: str, side: str, size: Decimal,
                         price: Decimal, order_id: Optional[str] = None):
@@ -220,4 +211,4 @@ if __name__ == "__main__":
         'indicators': {'rsi': 35, 'macd': 0.5}
     })
     
-    print("✅ Logger test complete - check logs/ and data/trades/ directories")
+    print("✅ Logger test complete - check logs/ directory")

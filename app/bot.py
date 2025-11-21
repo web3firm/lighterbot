@@ -459,18 +459,22 @@ class LighterBot:
                     )
                     logger.info(f"🔄 Trailing stop enabled: {trail_percent}% trail, activate at +{activation_profit}% profit")
                 
-                # Log trade entry to JSONL
-                trade_data = {
-                    'symbol': symbol,
-                    'strategy': signal.get('strategy', 'unknown'),
-                    'side': side,
-                    'entry_price': float(entry_price),
-                    'size': float(size),
-                    'leverage': leverage,
-                    'indicators': signal.get('indicators', {}),
-                    'score': signal.get('confidence', 5)
-                }
-                self.trading_logger.log_trade_entry(trade_data)
+                # Save trade entry to database
+                if self.db_manager:
+                    trade_data = {
+                        'trade_id': position_id,
+                        'symbol': symbol,
+                        'strategy': signal.get('strategy', 'unknown'),
+                        'side': side,
+                        'entry_price': float(entry_price),
+                        'size': float(size),
+                        'leverage': leverage,
+                        'entry_time': datetime.now(timezone.utc).isoformat(),
+                        'indicators': signal.get('indicators', {}),
+                        'ml_prediction': signal.get('ml_prediction'),
+                        'ml_confidence': signal.get('ml_confidence')
+                    }
+                    await self.db_manager.insert_trade(trade_data)
                 
                 logger.info(f"✅ Position opened successfully with TRUE OCO")
             
@@ -570,7 +574,7 @@ class LighterBot:
             # Update risk manager
             self.risk_manager.on_position_closed(symbol, actual_pnl)
             
-            # Log position closed
+            # Log position closed to console
             self.trading_logger.log_position_closed(
                 symbol=symbol,
                 side=side,
@@ -579,6 +583,20 @@ class LighterBot:
                 pnl=actual_pnl,
                 pnl_pct=pnl_pct
             )
+            
+            # Save trade exit to database
+            if self.db_manager:
+                exit_data = {
+                    'exit_price': float(exit_price),
+                    'exit_time': datetime.now(timezone.utc).isoformat(),
+                    'pnl_usd': float(actual_pnl),
+                    'pnl_pct': float(pnl_pct),
+                    'fees_usd': 0.0,  # TODO: Calculate actual fees
+                    'duration_seconds': int((datetime.now(timezone.utc) - datetime.fromisoformat(self.current_position.get('entry_time'))).total_seconds()) if self.current_position.get('entry_time') else 0,
+                    'exit_reason': 'OCO filled'
+                }
+                trade_id = self.current_position.get('position_id')
+                await self.db_manager.update_trade_exit(trade_id, exit_data)
             
             self.stats['positions_closed'] += 1
             self.current_position = None
