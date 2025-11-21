@@ -102,11 +102,11 @@ install_dependencies() {
     
     # Detect available Python version (prefer 3.11, 3.10, 3.9, fallback to python3)
     print_info "Detecting Python version..."
-    if apt-cache show python3.11 >/dev/null 2>&1; then
+    if command -v python3.11 >/dev/null 2>&1 || apt-cache show python3.11 >/dev/null 2>&1; then
         PYTHON_VERSION="3.11"
-    elif apt-cache show python3.10 >/dev/null 2>&1; then
+    elif command -v python3.10 >/dev/null 2>&1 || apt-cache show python3.10 >/dev/null 2>&1; then
         PYTHON_VERSION="3.10"
-    elif apt-cache show python3.9 >/dev/null 2>&1; then
+    elif command -v python3.9 >/dev/null 2>&1 || apt-cache show python3.9 >/dev/null 2>&1; then
         PYTHON_VERSION="3.9"
     else
         PYTHON_VERSION="3"
@@ -114,14 +114,33 @@ install_dependencies() {
     print_info "Using Python ${PYTHON_VERSION}"
     
     # Install Python and development tools
+    print_info "Installing Python packages..."
     if [ "$PYTHON_VERSION" = "3" ]; then
-        apt-get install -y python3 python3-venv python3-dev python3-pip
+        # Fallback to generic python3 packages
+        apt-get install -y python3 python3-venv python3-dev python3-pip 2>/dev/null || \
+        apt-get install -y python3 python3.10-venv python3-dev python3-pip 2>/dev/null || \
+        apt-get install -y python3 python3-pip
     else
-        apt-get install -y \
-            python${PYTHON_VERSION} \
-            python${PYTHON_VERSION}-venv \
-            python${PYTHON_VERSION}-dev \
-            python3-pip
+        # Try versioned packages first, fall back to generic if they don't exist
+        apt-get install -y python${PYTHON_VERSION} 2>/dev/null || true
+        apt-get install -y python${PYTHON_VERSION}-venv 2>/dev/null || apt-get install -y python3-venv 2>/dev/null || true
+        apt-get install -y python${PYTHON_VERSION}-dev 2>/dev/null || apt-get install -y python3-dev 2>/dev/null || true
+        apt-get install -y python3-pip 2>/dev/null || true
+    fi
+    
+    # Verify Python installation
+    if ! command -v python3 >/dev/null 2>&1; then
+        print_error "Python3 installation failed"
+        exit 1
+    fi
+    
+    INSTALLED_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
+    print_success "Python ${INSTALLED_VERSION} installed successfully"
+    
+    # Install pip if not available
+    if ! command -v pip3 >/dev/null 2>&1; then
+        print_info "Installing pip..."
+        curl -sSL https://bootstrap.pypa.io/get-pip.py | python3
     fi
     
     # Install other required packages
@@ -139,7 +158,7 @@ install_dependencies() {
         logrotate \
         htop \
         net-tools \
-        postgresql-client
+        postgresql-client 2>/dev/null || true
     
     print_success "System dependencies installed"
 }
