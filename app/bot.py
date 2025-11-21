@@ -220,6 +220,15 @@ class LighterBot:
         
         self.running = True
         
+        # Startup observation period (analyze market without trading)
+        startup_delay = int(os.getenv('STARTUP_DELAY_SECONDS', '60'))
+        if startup_delay > 0:
+            logger.info(f"👀 Observation mode: Analyzing market for {startup_delay}s before trading...")
+            self.last_position_close_time = datetime.now(timezone.utc)  # Block trading temporarily
+            await asyncio.sleep(startup_delay)
+            self.last_position_close_time = None  # Allow trading now
+            logger.info("✅ Observation complete - Trading enabled")
+        
         logger.info("✅ Bot started successfully")
         logger.info("🔄 Entering main loop (1s cycle)...")
         
