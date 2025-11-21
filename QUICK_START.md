@@ -21,7 +21,7 @@ pip install -r requirements.txt
 
 ## 4. Set up PostgreSQL database
 ```bash
-# Install PostgreSQL (if not installed)
+# Install PostgreSQL (Ubuntu/Debian)
 sudo apt update && sudo apt install postgresql postgresql-contrib
 
 # Create database
@@ -34,9 +34,14 @@ psql postgresql://postgres@localhost/lighterbot < app/database/schema.sql
 ## 5. Configure environment
 ```bash
 cp .env.example .env
-nano .env  # Edit with your API keys
+nano .env  # Edit with your keys
 ```
-**Required**: Add `DATABASE_URL=postgresql://postgres@localhost/lighterbot`
+
+**Required variables:**
+- `DATABASE_URL` - PostgreSQL connection
+- `LIGHTER_API_PRIVATE_KEY` - Your private key
+- `TELEGRAM_BOT_TOKEN` - Telegram bot token
+- `TELEGRAM_CHAT_ID` - Your Telegram chat ID
 
 ## 6. Run it!
 ```bash
