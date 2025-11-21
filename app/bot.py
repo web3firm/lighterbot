@@ -68,7 +68,7 @@ class LighterBot:
         self.account_state: Dict[str, Any] = {}
         self.current_position: Optional[Dict[str, Any]] = None
         self.last_position_close_time: Optional[datetime] = None
-        self.position_cooldown_seconds = 30  # Wait 30s after close before new entry
+        self.position_cooldown_seconds = int(os.getenv('POSITION_COOLDOWN_SECONDS', '30'))  # Wait N seconds after close before new entry
         
         # Statistics
         self.stats = {
