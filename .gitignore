@@ -1,4 +1,4 @@
-.env
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
@@ -19,13 +19,48 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-logs/
-*.log
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
 .vscode/
 .idea/
-*.db
-*.sqlite
-data/
-backups/
+*.swp
+*.swo
+*~
+
+# Environment & Secrets
+.env
+*.key
+secrets/
+credentials.json
+
+# Logs
+*.log
+logs/
 *.pid
 
+# Data
+data/trades/*.jsonl
+data/processed/
+data/model_dataset/
+ml/models/*.pkl
+ml/models/*.joblib
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Deployment
+bot_output.log
+nohup.out

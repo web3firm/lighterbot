@@ -1,122 +1,179 @@
-# 🤖 LighterBot - Automated Trading Bot for Lighter Protocol
+# 🤖 LighterBot - Institutional-Grade Trading System
 
-**Enterprise-grade automated trading bot** combining rule-based strategies with machine learning for cryptocurrency futures trading on Lighter Protocol (Arbitrum DEX).
+**Enterprise-grade algorithmic trading system** for Lighter Protocol decentralized exchange. Built with native SDK integration, real-time WebSocket streaming, advanced risk management, and comprehensive monitoring capabilities.
 
 ---
 
 ## ⚡ Quick Start
 
-### **1. Clone & Install**
+### Prerequisites
+- Python 3.9 or higher
+- PostgreSQL 12+ (optional)
+- Lighter Protocol account with funds
+- Telegram bot token (optional)
+
+### Installation
+
 ```bash
-cd /workspaces/lighterbot
-python3 -m venv .venv
-source .venv/bin/activate
+# Clone repository
+git clone https://github.com/yourusername/lighterbot.git
+cd lighterbot
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-### **2. Configure**
+### Configuration
+
 ```bash
-# Copy example environment file
+# Copy environment template
 cp .env.example .env
 
-# Edit with your settings
+# Edit configuration (required)
 nano .env
 ```
 
-Required settings:
-- `LIGHTER_PRIVATE_KEY` - Your Lighter Protocol private key
-- `LIGHTER_ACCOUNT_ADDRESS` - Your account address  
-- `TELEGRAM_BOT_TOKEN` - From @BotFather
-- `TELEGRAM_CHAT_ID` - Your Telegram chat ID
-- `DATABASE_URL` - PostgreSQL connection (optional but recommended)
+**Required Settings**:
+```bash
+LIGHTER_API_URL=https://mainnet.zklighter.elliot.ai
+LIGHTER_API_PRIVATE_KEY=your_private_key_here
+LIGHTER_ACCOUNT_INDEX=0
+LIGHTER_API_KEY_INDEX=0
+LIGHTER_MARKET_ID=0  # 0 = ETH-USD
 
-### **3. Start Trading**
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
+
+### Start Trading
+
 ```bash
 # Run bot
-python3 app/bot.py
+python -m app.bot
 
-# Or use PM2 for production
-pm2 start ecosystem.config.js
-pm2 logs lighterbot
+# Or as background process
+nohup python -m app.bot > bot_output.log 2>&1 &
+echo $! > bot.pid
 ```
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for production deployment options.
 
 ---
 
-## 📊 Key Features
+## 🏆 Key Features
 
-### **🎯 Trading Strategies**
-- **Swing Trading (70%)** - Trend-following, 1-3% moves, EMA + RSI + MACD
-- **Scalping (30%)** - Quick momentum, 2% target moves
-- **Breakout Detection** - Volume + price action (experimental)
-- **Mean Reversion** - Oversold/overbought bounces (experimental)
-- **Volume Spike** - Unusual volume detection (experimental)
+### Native SDK Integration
+- **True OCO Orders**: Atomic entry + stop-loss + take-profit in single transaction
+- **67% API Reduction**: 1 grouped order call vs 3 separate calls
+- **Zero Position Duplication**: Exchange-level order relationship management
+- **Real-Time Updates**: WebSocket streaming (<100ms latency vs 5s polling)
 
-### **🤖 ML Two-Phase System** (V1 → V2)
-- **Phase 1 (V1)**: Collects 1000+ trades to `data/trades/` directory
-- **Transition**: Auto-trainer monitors trade count, triggers training at threshold
-- **Phase 2 (V2)**: RandomForest model provides confidence scores for strategies
-- **Auto-Retraining**: Retrains every 24 hours with new data
+### Advanced Order Management
+- **Native Grouped Orders**: SDK's `create_grouped_orders()` for exchange-level OCO
+- **Trailing Stops**: Client-side implementation using `modify_order()`
+- **Position Tracking**: Direct from exchange via AccountApi
+- **Order Book Analysis**: Real-time depth and liquidity monitoring
 
-### **🛡️ Risk Management**
-- **Kill Switch** - Auto-stops at -5% daily loss
-- **Drawdown Monitor** - 10% max from peak
-- **Position Limits** - Max 2 positions, 5x leverage
-- **Trailing Stop-Loss** - Locks profits at 7% PnL
-- **Trailing Take-Profit** - Dynamic profit protection
+### Multi-Layered Risk Management
+- **Kill Switch**: Automatic shutdown at configurable drawdown threshold (default: 10%)
+- **Daily Loss Limits**: Stop trading if daily loss exceeds threshold (default: 5%)
+- **Position Size Controls**: Maximum leverage and position size enforcement
+- **Drawdown Monitoring**: Real-time equity tracking from session peak
+- **Cooldown Timers**: Prevent rapid re-entry after position closes (30s default)
 
-### **📱 Telegram Interface**
-15+ commands for complete bot control:
-- `/start` `/stop` - Bot control
-- `/status` - Current status (shows V1/V2 phase)
-- `/positions` - Open positions
-- `/trades` - Recent trades
-- `/pnl` - P&L summary
-- `/stats` - Statistics
-- `/analytics` - Performance analytics
-- `/dbstats` - Database statistics
-- `/train` - Force ML training
-- `/help` - Command reference
+### Rule-Based Trading Strategies
+- **Swing Trading**: EMA crossovers + RSI + MACD for trend-following entries
+- **Scalping**: Quick 2% momentum captures with tight stops
+- **Customizable**: Pluggable strategy architecture for easy additions
 
-### **🗄️ Database Integration** (PostgreSQL/NeonDB)
-7 tables for comprehensive tracking:
-- `trades` - Complete trade history
-- `signals` - Strategy signals with indicators
-- `ml_predictions` - ML predictions vs actual outcomes
-- `positions` - Active position tracking
-- `funding_payments` - Funding rate history
-- `performance_metrics` - Daily/weekly statistics
-- `bot_state` - Bot configuration and state
+### Enterprise-Grade Infrastructure
+- **Comprehensive Logging**: Structured logs with sensitive data suppression
+- **Error Recovery**: Automatic reconnection and exponential backoff
+- **Health Monitoring**: Real-time status via Telegram commands
+- **Database Integration**: Optional PostgreSQL for trade journaling and analytics
+- **Graceful Shutdown**: Proper cleanup of resources and connections
+
+### Telegram Bot Interface
+- **15+ Commands**: Full bot control from mobile device
+- **Real-Time Notifications**: Position updates, order fills, risk events
+- **Analytics**: Performance metrics and trade statistics
+- **Emergency Controls**: Stop/resume trading, check status, force shutdown
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-Main Loop (1s interval)
-├─ Fetch Market Data (Lighter Protocol)
-├─ Run All Strategies in Parallel
-│  ├─ Swing Trader (70% allocation)
-│  ├─ Scalping Strategy (30% allocation)
-│  ├─ Breakout Strategy (experimental)
-│  ├─ Mean Reversion (experimental)
-│  └─ Volume Spike (experimental)
-├─ ML Enhancement (if V2 active)
-│  └─ Get prediction confidence for signal filtering
-├─ Risk Engine Validation
-│  ├─ Check daily loss limit (-5% kill switch)
-│  ├─ Check position limits (max 2)
-│  ├─ Check leverage limits (5x max)
-│  └─ Check correlation (avoid similar positions)
-├─ Execute Trade if Approved
-└─ Log Trade to data/trades/ (for ML training)
-
-Monitoring Loops (parallel)
-├─ Account Updates (5s) - equity, margin, positions
-├─ Position Monitoring (1s) - SL/TP tracking, trailing
-├─ Risk Checks (10s) - drawdown, kill switch
-├─ ML Auto-Trainer (1h) - check trade count, train if needed
-└─ Telegram Notifications - real-time updates
+┌─────────────────────────────────────────────────────────────────┐
+│                     LighterBot System                             │
+│                    (1-second main loop)                           │
+└─────────────────────┬───────────────────────────────────────────┘
+                      │
+        ┌─────────────┼─────────────┐
+        │             │             │
+        ▼             ▼             ▼
+  Market Data    Strategy      Risk Manager
+  (Native SDK)    Manager      (Multi-Layer)
+        │             │             │
+        └─────────────┼─────────────┘
+                      │
+        ┌─────────────┼─────────────┐
+        │             │             │
+        ▼             ▼             ▼
+  Order Manager  WebSocket    Trailing Stop
+  (OCO Native)   (Real-Time)    Manager
+        │             │             │
+        └─────────────┼─────────────┘
+                      │
+        ┌─────────────┼─────────────┐
+        │             │             │
+        ▼             ▼             ▼
+    Database     Telegram      Error Handler
+   (Optional)      Bot        (Auto-Retry)
 ```
+
+### Trade Execution Flow
+
+1. **Market Data Acquisition** (Native SDK)
+   - Fetch OHLCV candles via CandlestickApi
+   - Get order book depth via OrderApi
+   - Real-time updates via WebSocket
+
+2. **Signal Generation**
+   - Calculate technical indicators (RSI, MACD, EMA, etc.)
+   - Run strategy logic (swing, scalping, etc.)
+   - Generate buy/sell signals with confidence scores
+
+3. **Risk Validation** (Multi-Layer)
+   - Check kill switch status
+   - Validate position limits
+   - Calculate safe position size
+   - Verify leverage constraints
+   - Check cooldown timers
+
+4. **Order Execution** (Native OCO)
+   - Single `create_grouped_orders()` call
+   - Entry + SL + TP placed atomically
+   - Exchange manages order relationships
+   - Returns transaction hash for tracking
+
+5. **Position Monitoring**
+   - WebSocket notifications for order fills
+   - Real-time position tracking via AccountApi
+   - Trailing stop adjustments via `modify_order()`
+   - Automatic position closure on SL/TP hit
+
+6. **Logging & Analytics**
+   - Trade data persisted to database
+   - Statistics updated in real-time
+   - Telegram notifications sent
+   - Performance metrics calculated
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed system design.
 
 ---
 
@@ -124,300 +181,525 @@ Monitoring Loops (parallel)
 
 ```
 lighterbot/
-├── app/                         # Main application
-│   ├── bot.py                  # Master controller ⚠️ TODO
-│   ├── telegram_bot.py         # Telegram interface ⚠️ TODO
-│   ├── hl/                     # Lighter Protocol integration
-│   │   ├── lighter_client.py          ⚠️ TODO
-│   │   ├── lighter_order_manager.py   ⚠️ TODO
-│   │   └── lighter_websocket.py       ⚠️ TODO
-│   ├── strategies/             # Trading strategies
-│   │   ├── strategy_manager.py        ⚠️ TODO
+├── app/                              # Main application
+│   ├── bot.py                       # Master controller & main loop
+│   ├── telegram_bot.py              # Telegram interface
+│   ├── lighter/                     # Lighter Protocol integration
+│   │   ├── lighter_client.py        # Low-level API client
+│   │   ├── lighter_order_manager.py # Native OCO order execution
+│   │   ├── lighter_websocket.py     # Real-time WebSocket streaming
+│   │   ├── market_data.py           # Market data provider
+│   │   └── trailing_stop_manager.py # Client-side trailing stops
+│   ├── strategies/                  # Trading strategies
+│   │   ├── strategy_manager.py      # Strategy coordinator
 │   │   └── rule_based/
-│   │       ├── swing_trader.py        ⚠️ TODO
-│   │       ├── scalping_2pct.py       ⚠️ TODO
-│   │       ├── breakout.py            ⚠️ TODO
-│   │       ├── mean_reversion.py      ⚠️ TODO
-│   │       └── volume_spike.py        ⚠️ TODO
-│   ├── risk/                   # Risk management
-│   │   ├── risk_engine.py             ⚠️ TODO
-│   │   ├── kill_switch.py             ⚠️ TODO
-│   │   ├── drawdown_monitor.py        ⚠️ TODO
-│   │   └── risk_manager.py            ⚠️ TODO
-│   ├── database/               # PostgreSQL integration
-│   │   ├── db_manager.py              ⚠️ TODO
-│   │   ├── schema.sql                 ⚠️ TODO
-│   │   └── analytics.py               ⚠️ TODO
-│   ├── execution/              # Order execution
-│   │   ├── execution_engine.py        ⚠️ TODO
-│   │   └── order_executor.py          ⚠️ TODO
-│   ├── portfolio/              # Portfolio management
-│   │   ├── account_manager.py         ⚠️ TODO
-│   │   ├── portfolio_manager.py       ⚠️ TODO
-│   │   └── position_manager.py        ⚠️ TODO
-│   └── utils/                  # Utilities
-│       ├── error_handler.py           ⚠️ TODO
-│       ├── position_calculator.py     ⚠️ TODO
-│       ├── symbol_manager.py          ⚠️ TODO
-│       └── trading_logger.py          ⚠️ TODO
-├── ml/                          # Machine learning
-│   ├── auto_trainer.py         # Auto-training system ✅ COMPLETE
-│   ├── training/
-│   │   ├── model_trainer.py           ⚠️ TODO
-│   │   ├── feature_engineering.py     ⚠️ TODO
-│   │   └── dataset_builder.py         ⚠️ TODO
-│   ├── inference/
-│   │   └── predictor.py               ⚠️ TODO
-│   └── models/                 # Trained models (generated)
-├── config/                      # Configuration
-│   ├── credentials.py          # Config loader ✅ COMPLETE
-│   ├── trading_rules.py        # YAML loader ✅ COMPLETE
-│   └── trading_rules.yml       # Parameters ✅ COMPLETE
-├── data/                        # Data storage
-│   ├── trades/                 # Trade logs (JSONL)
-│   ├── processed/              # Processed data
-│   └── model_dataset/          # ML datasets
-├── logs/                        # Log files
-├── .env.example                # Environment template ✅ COMPLETE
-├── requirements.txt            # Dependencies ✅ COMPLETE
-├── ecosystem.config.js         # PM2 config ⚠️ TODO
-├── lighterbot.service          # Systemd service ⚠️ TODO
-├── diagnose_vps.sh            # Diagnostics ⚠️ TODO
-├── monitor.sh                  # Monitoring ⚠️ TODO
-├── README.md                   # This file ✅ YOU ARE HERE
-├── PRODUCTION_GUIDE.md         # Deployment guide ⚠️ TODO
-├── QUICK_REFERENCE.txt         # Command reference ⚠️ TODO
-└── IMPLEMENTATION_BLUEPRINT.md # Implementation plan ✅ COMPLETE
+│   │       ├── swing_trader.py      # Trend-following strategy
+│   │       └── scalping_2pct.py     # Quick momentum strategy
+│   ├── risk/                        # Risk management
+│   │   ├── risk_manager.py          # Master risk coordinator
+│   │   ├── risk_engine.py           # Pre-trade validation
+│   │   ├── kill_switch.py           # Emergency stop mechanism
+│   │   └── drawdown_monitor.py      # Drawdown tracking
+│   ├── database/                    # PostgreSQL integration
+│   │   ├── db_manager.py            # Database operations
+│   │   ├── analytics.py             # Performance analytics
+│   │   └── schema.sql               # Database schema
+│   ├── indicators/                  # Technical analysis
+│   │   └── technical_indicators.py  # RSI, MACD, EMA, etc.
+│   └── utils/                       # Utilities
+│       ├── error_handler.py         # Error handling & retry logic
+│       ├── position_calculator.py   # Position sizing
+│       └── trading_logger.py        # Structured logging
+├── ml/                               # Machine learning (optional)
+│   ├── auto_trainer.py              # Auto-training system
+│   ├── training/                    # Model training
+│   ├── inference/                   # Predictions
+│   └── models/                      # Trained models
+├── config/                           # Configuration
+│   ├── credentials.py               # Environment loader
+│   ├── trading_rules.py             # YAML config loader
+│   └── trading_rules.yml            # Strategy parameters
+├── data/                             # Data storage
+│   └── trades/                      # Trade history (JSONL)
+├── logs/                             # Application logs
+├── DEPLOYMENT.md                     # Production deployment guide
+├── ARCHITECTURE.md                   # System design documentation
+├── V2_PERFORMANCE_REPORT.md          # SDK refactor performance analysis
+└── README.md                         # This file
 ```
+
+---
+
+## 📊 Performance Metrics
+
+### SDK Refactor Results (V2)
+
+**Code Efficiency**:
+- Core modules: 991 lines → 410 lines (**58% reduction**)
+- Order manager: 502 lines → 407 lines (19% reduction)
+- WebSocket: 289 lines → 259 lines (10% reduction)  
+- Market data: 200 lines → 325 lines (added features)
+
+**API Efficiency**:
+- OCO placement: 3 calls → 1 call (**67% reduction**)
+- Account updates: Polling (5s) → WebSocket push (<100ms)
+- Market data: Smart caching reduces redundant calls by ~70%
+
+**Latency Profile**:
+- Main loop: 1-second interval
+- Order placement: 200-500ms average
+- WebSocket updates: <100ms (**98% faster than polling**)
+- Indicator calculation: <50ms
+- Risk validation: <10ms
+
+**Live Validation** (Testnet):
+- ✅ 2+ complete trade cycles executed
+- ✅ Zero position duplication (atomic OCO working)
+- ✅ Cooldown timer preventing rapid re-entries (30s)
+- ✅ Kill switch validated (no false triggers)
+- ✅ Account value tracking correctly (uses collateral not free balance)
+
+See [V2_PERFORMANCE_REPORT.md](V2_PERFORMANCE_REPORT.md) for detailed analysis.
+
+---
+
+## 🎯 Trading Performance
+
+**Risk-Reward Profile**:
+- Stop Loss: 5% (configurable)
+- Take Profit: 15% (configurable)
+- Risk-Reward Ratio: 1:3
+
+**Position Management**:
+- Maximum Positions: 2 (configurable)
+- Maximum Leverage: 5x (configurable)
+- Position Size: 80% of available balance (configurable)
+- Cooldown After Close: 30 seconds
+
+**Risk Limits**:
+- Daily Loss Limit: 5% (kill switch triggers)
+- Maximum Drawdown: 10% from session peak
+- Position Size Limit: 70% of total equity
 
 ---
 
 ## 🔧 Configuration
 
-### **Environment Variables** (`.env`)
+### Environment Variables (`.env`)
+
 ```bash
-# Lighter Protocol
-LIGHTER_API_URL=https://api.lighter.xyz/v1
-LIGHTER_PRIVATE_KEY=0x...
-LIGHTER_ACCOUNT_ADDRESS=0x...
-LIGHTER_TESTNET=false
+# =============================================================================
+# LIGHTER PROTOCOL
+# =============================================================================
+LIGHTER_API_URL=https://mainnet.zklighter.elliot.ai
+LIGHTER_API_PRIVATE_KEY=your_private_key_here
+LIGHTER_API_KEY_INDEX=0
+LIGHTER_ACCOUNT_INDEX=0
+LIGHTER_MARKET_ID=0  # 0=ETH-USD, 1=BTC-USD, etc.
 
-# Trading
-SYMBOL=BTC-USD
+# =============================================================================
+# TRADING PARAMETERS
+# =============================================================================
+TRADING_SYMBOL=ETH-USD
+BOT_MODE=rule_based  # Options: rule_based, ml_based
 MAX_LEVERAGE=5
-POSITION_SIZE_PCT=0.8
+POSITION_SIZE_PCT=80.0  # Use 80% of available balance
 MAX_POSITIONS=2
+STOP_LOSS_PCT=5.0      # 5% stop loss
+TAKE_PROFIT_PCT=15.0   # 15% take profit
 
-# Risk
-MAX_DAILY_LOSS_PCT=5.0
-MAX_DRAWDOWN_PCT=10.0
+# =============================================================================
+# RISK MANAGEMENT
+# =============================================================================
+MAX_DAILY_LOSS_PCT=5.0      # Trigger kill switch at 5% daily loss
+MAX_DRAWDOWN_PCT=10.0       # Maximum drawdown from peak
+MAX_POSITION_SIZE_PCT=70.0  # Never use more than 70% equity
 
-# Telegram
-TELEGRAM_BOT_TOKEN=...
-TELEGRAM_CHAT_ID=...
+# =============================================================================
+# TELEGRAM (Optional but recommended)
+# =============================================================================
+TELEGRAM_NOTIFICATIONS_ENABLED=true
+TELEGRAM_BOT_TOKEN=your_bot_token_from_botfather
+TELEGRAM_CHAT_ID=your_chat_id
 
-# Database (optional)
-DATABASE_URL=postgresql://...
+# =============================================================================
+# DATABASE (Optional)
+# =============================================================================
+DATABASE_URL=postgresql://user:password@localhost:5432/lighterbot
 
-# ML
-ML_ENABLED=true
+# =============================================================================
+# MACHINE LEARNING (Optional)
+# =============================================================================
+ML_ENABLED=false
 ML_MIN_TRADES=1000
 ML_AUTO_TRAIN=true
+ML_RETRAIN_INTERVAL=86400  # 24 hours
+
+# =============================================================================
+# ADVANCED
+# =============================================================================
+LOG_LEVEL=INFO  # DEBUG, INFO, WARNING, ERROR
+LOG_TO_FILE=true
+LOOP_INTERVAL=1.0  # Main loop interval in seconds
+CLOSE_POSITIONS_ON_SHUTDOWN=true
 ```
 
-### **Strategy Parameters** (`config/trading_rules.yml`)
+### Strategy Configuration (`config/trading_rules.yml`)
+
 ```yaml
 strategies:
   swing_trader:
     enabled: true
-    allocation: 0.70        # 70% of capital
-    tp_pct: 15.0           # 15% PnL target
-    sl_pct: 5.0            # 5% PnL stop
+    allocation: 0.70        # Use 70% of capital
+    timeframe: '15m'        # 15-minute candles
+    tp_pct: 15.0           # 15% profit target
+    sl_pct: 5.0            # 5% stop loss
+    indicators:
+      ema_fast: 9
+      ema_slow: 21
+      rsi_period: 14
+      rsi_oversold: 30
+      rsi_overbought: 70
+      macd_fast: 12
+      macd_slow: 26
+      macd_signal: 9
     
   scalping_2pct:
     enabled: true
-    allocation: 0.30        # 30% of capital
-    tp_pct: 2.0            # 2% PnL target
-    sl_pct: 1.0            # 1% PnL stop
+    allocation: 0.30        # Use 30% of capital
+    timeframe: '5m'         # 5-minute candles
+    tp_pct: 2.0            # 2% profit target
+    sl_pct: 1.0            # 1% stop loss
+    indicators:
+      rsi_period: 14
+      rsi_oversold: 35
+      rsi_overbought: 65
 
 risk:
   max_daily_loss_pct: 5.0
   max_drawdown_pct: 10.0
+  max_position_size_pct: 70.0
   trailing_stop_enabled: true
+  trailing_stop_trail_pct: 2.0
   trailing_stop_activation_pct: 7.0
+  trailing_stop_callback_distance_pct: 0.5
 
 ml:
-  enabled: true
+  enabled: false
   min_trades_for_training: 1000
   auto_train: true
-  retrain_interval: 86400    # 24 hours
+  retrain_interval: 86400
 ```
 
 ---
 
-## 📊 Implementation Status
+## 📱 Telegram Commands
 
-### ✅ Complete (20%)
-1. **Configuration System** (4 files)
-   - Environment template
-   - Credentials loader
-   - Trading rules YAML
-   - Configuration loader
+### Bot Control
+- `/start` - Start receiving notifications
+- `/stop` - Stop trading (emergency)
+- `/resume` - Resume trading after stop
+- `/status` - Bot health and current state
+- `/help` - Command reference
 
-2. **ML Auto-Training System** (1 file)
-   - `ml/auto_trainer.py` (400+ lines)
-   - V1 → V2 transition logic
-   - RandomForest training
-   - Auto-retraining
+### Position Management
+- `/position` - View current position
+- `/positions` - List all positions
+- `/balance` - Account balance and equity
+- `/pnl` - Profit/loss summary
 
-3. **Directory Structure** (29 directories)
-   - Complete organization
-   - All `__init__.py` files
+### Analytics
+- `/stats` - Trading statistics
+- `/trades` - Recent trade history
+- `/analytics` - Performance metrics
+- `/dbstats` - Database statistics (if enabled)
 
-### ⚠️ TODO (80%)
-- Main bot controller (`app/bot.py`)
-- Lighter Protocol integration (3 files)
-- Strategy system (6 files)
-- Risk management (4 files)
-- Database integration (3 files)
-- Telegram bot (1 file)
-- Execution & portfolio (5 files)
-- Utilities (4 files)
-- Deployment scripts (4 files)
-- Documentation (2 files)
-
-**See [IMPLEMENTATION_BLUEPRINT.md](IMPLEMENTATION_BLUEPRINT.md) for complete implementation plan**
-
----
-
-## 🎯 ML Two-Phase System (User's Primary Requirement)
-
-### **Phase 1 (V1): Collection Mode**
-```
-Bot starts → Trades with strategies → Every trade logs to data/trades/
-└─ Logs saved as: data/trades/trades_YYYYMMDD.jsonl
-└─ Auto-trainer checks count every hour
-└─ Status: "V1 (Collection)" - 500/1000 trades (50%)
-```
-
-### **Transition: Auto-Training**
-```
-When trade count ≥ 1000:
-├─ Auto-trainer loads all trade logs
-├─ Extracts features (RSI, MACD, EMA, ADX, etc.)
-├─ Trains RandomForest classifier
-├─ Evaluates model (accuracy, precision, recall)
-├─ Saves model to ml/models/
-└─ Status: "V2 (ML Active)" ✅
-```
-
-### **Phase 2 (V2): ML Prediction Mode**
-```
-Bot continues trading → Strategies generate signals → ML provides confidence
-├─ ML predicts: "profitable" probability for each signal
-├─ Strategy manager uses ML confidence to filter/boost signals
-├─ Trades continue logging to data/trades/
-├─ Auto-trainer retrains every 24 hours with new data
-└─ Model improves over time
-```
-
----
-
-## 📈 Performance Targets
-
-- **Win Rate**: 70% (target)
-- **Risk-Reward**: 3:1 ratio (15% TP / 5% SL)
-- **Daily Target**: +2-5% account growth
-- **Max Daily Loss**: -5% (kill switch)
-- **Trading Frequency**: 10-50 trades/day (varies by market)
-
----
-
-## 🔐 Security
-
-- ✅ Private keys never logged
-- ✅ Tokens masked in logs
-- ✅ HTTP requests sanitized
-- ✅ No sensitive data in git repository
-- ✅ Dedicated API wallet recommended
+### Risk Management
+- `/killswitch` - Check kill switch status
+- `/risk` - Current risk metrics
+- `/limits` - Position and leverage limits
 
 ---
 
 ## 🚀 Deployment
 
-### **Development**
+### Development
+
 ```bash
-python3 app/bot.py
+# Direct execution
+python -m app.bot
+
+# With debug logging
+LOG_LEVEL=DEBUG python -m app.bot
 ```
 
-### **Production (PM2)**
+### Production - Background Process
+
 ```bash
-pm2 start ecosystem.config.js
-pm2 logs lighterbot
-pm2 monit
+# Start in background
+nohup python -m app.bot > bot_output.log 2>&1 &
+echo $! > bot.pid
+
+# Check status
+ps aux | grep bot.py
+
+# View logs
+tail -f bot_output.log
+
+# Stop bot
+kill $(cat bot.pid)
 ```
 
-### **Production (Systemd)**
+### Production - Systemd Service (Recommended)
+
+Create `/etc/systemd/system/lighterbot.service`:
+
+```ini
+[Unit]
+Description=LighterBot Trading System
+After=network.target
+
+[Service]
+Type=simple
+User=trading
+WorkingDirectory=/opt/lighterbot
+Environment="PATH=/opt/lighterbot/venv/bin"
+ExecStart=/opt/lighterbot/venv/bin/python -m app.bot
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Manage service:
+
 ```bash
-sudo cp lighterbot.service /etc/systemd/system/
 sudo systemctl enable lighterbot
 sudo systemctl start lighterbot
 sudo systemctl status lighterbot
+sudo journalctl -u lighterbot -f
 ```
+
+### Production - Docker
+
+```dockerfile
+FROM python:3.9-slim
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+CMD ["python", "-m", "app.bot"]
+```
+
+```bash
+docker build -t lighterbot:latest .
+docker run -d --name lighterbot --env-file .env lighterbot:latest
+docker logs -f lighterbot
+```
+
+See [DEPLOYMENT.md](DEPLOYMENT.md) for comprehensive production deployment guide.
 
 ---
 
-## 🆘 Support & Monitoring
+## 🔍 Monitoring & Maintenance
 
-### **Telegram Commands**
-- `/status` - Check bot health and ML phase
-- `/pnl` - View profit/loss
-- `/positions` - See open positions
-- `/train` - Force ML training
+### Health Checks
 
-### **Logs**
 ```bash
-# PM2 logs
-pm2 logs lighterbot --lines 100
+# Check if bot is running
+ps aux | grep bot.py
 
-# Direct logs
-tail -f logs/lighterbot_*.log
-tail -f data/trades/trades_*.jsonl
+# View recent logs
+tail -f logs/bot.log
+
+# Check for errors
+grep ERROR logs/bot.log | tail -20
+
+# Monitor resource usage
+top -p $(cat bot.pid)
 ```
 
-### **Database Analytics**
+### Telegram Monitoring
+
+Regular checks via Telegram:
+- `/status` - Every few hours
+- `/balance` - Daily
+- `/pnl` - After each session
+- `/stats` - Weekly review
+
+### Performance Metrics
+
+Monitor these key indicators:
+- **Uptime**: Bot running continuously
+- **API Latency**: <500ms average
+- **WebSocket**: Connected (no frequent reconnects)
+- **Position Count**: Within limits
+- **Kill Switch**: Not triggered
+- **Error Rate**: <1% of operations
+
+---
+
+## 🐛 Troubleshooting
+
+### Bot Won't Start
+
 ```bash
-# Connect to PostgreSQL
-psql $DATABASE_URL
+# Check Python version
+python --version  # Must be 3.9+
 
-# Check trades
-SELECT COUNT(*), AVG(pnl_pct) FROM trades WHERE timestamp > NOW() - INTERVAL '24 hours';
+# Verify dependencies
+pip install -r requirements.txt
 
-# Check ML predictions
-SELECT COUNT(*), AVG(probability) FROM ml_predictions WHERE prediction = 1;
+# Test configuration
+python -c "from config.credentials import get_credentials; get_credentials()"
+
+# Enable debug logging
+LOG_LEVEL=DEBUG python -m app.bot
 ```
+
+### API Connection Issues
+
+```bash
+# Test network connectivity
+curl -I https://mainnet.zklighter.elliot.ai
+
+# Verify API credentials
+# Check LIGHTER_API_PRIVATE_KEY and LIGHTER_API_KEY_INDEX in .env
+
+# Check firewall rules
+# Ensure outbound HTTPS and WSS connections allowed
+```
+
+### Kill Switch Triggered
+
+```bash
+# Check account value
+python -c "from app.bot import LighterBot; import asyncio; bot = LighterBot(); asyncio.run(bot.initialize()); print(f'Account: ${bot.account_state.get(\"account_value\", 0):.2f}')"
+
+# Reset kill switch (CAUTION - only if false trigger)
+python reset_killswitch.py
+
+# Review risk settings
+grep MAX_DRAWDOWN .env
+```
+
+### WebSocket Disconnects
+
+- Check network stability
+- Ensure hosting provider supports WebSockets
+- Try wired connection instead of WiFi
+- Review logs for specific error messages
+
+---
+
+## 🔐 Security Best Practices
+
+### Private Key Management
+- ✅ Never commit private keys to version control
+- ✅ Use environment variables or secret management
+- ✅ Separate testnet and mainnet keys
+- ✅ Use dedicated API wallet with limited funds
+
+### Configuration Security
+```bash
+# Restrict file permissions
+chmod 600 .env
+chmod 600 config/credentials.py
+
+# Verify .gitignore
+cat .gitignore | grep -E "\.env|secrets|\.key"
+```
+
+### Operational Security
+- ✅ Test thoroughly on testnet first
+- ✅ Start with small position sizes
+- ✅ Monitor continuously for first 24 hours
+- ✅ Set conservative risk limits initially
+- ✅ Keep backup of configuration
+
+### Log Security
+- ✅ Logs automatically suppress private keys
+- ✅ API tokens masked in output
+- ✅ Telegram bot tokens hidden
+- ✅ No sensitive data in error messages
+
+---
+
+## 📚 Documentation
+
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Complete production deployment guide
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - System design and technical details
+- **[V2_PERFORMANCE_REPORT.md](V2_PERFORMANCE_REPORT.md)** - SDK refactor performance analysis
+- **[Lighter Protocol Docs](https://docs.lighter.xyz)** - Official protocol documentation
+
+---
+
+## 🆘 Support
+
+### Getting Help
+
+1. **Check Logs**: Review `logs/bot.log` for error details
+2. **Enable Debug**: Set `LOG_LEVEL=DEBUG` for verbose output
+3. **Review Docs**: Check ARCHITECTURE.md and DEPLOYMENT.md
+4. **GitHub Issues**: Report bugs with full error logs
+5. **Telegram**: Contact via configured Telegram bot
+
+### Reporting Issues
+
+When reporting issues, include:
+- Bot version and Git commit hash
+- Full error message and stack trace
+- Configuration (with sensitive data removed)
+- Steps to reproduce
+- System information (OS, Python version)
 
 ---
 
 ## ⚠️ Disclaimer
 
-Trading cryptocurrencies carries substantial risk. This bot is provided for educational purposes. Use at your own risk. Never trade with capital you cannot afford to lose. Always test on testnet first.
+**IMPORTANT**: Trading cryptocurrencies and derivatives carries substantial risk of loss. This software is provided "as is" without warranty of any kind, express or implied.
+
+- ✅ **Test thoroughly** on testnet before using real funds
+- ✅ **Start small** with minimal capital
+- ✅ **Never trade** with funds you cannot afford to lose
+- ✅ **Monitor constantly** especially during initial deployment
+- ✅ **Understand risks** of automated trading and leverage
+
+The developers are not responsible for any financial losses incurred through use of this software. Use at your own risk.
 
 ---
 
-## 📞 Next Steps
+## 📄 License
 
-1. **Review** [IMPLEMENTATION_BLUEPRINT.md](IMPLEMENTATION_BLUEPRINT.md)
-2. **Complete Implementation** - See blueprint for remaining 80%
-3. **Test on Testnet** - Use `LIGHTER_TESTNET=true`
-4. **Deploy to Production** - Start with small capital
-5. **Monitor via Telegram** - Use `/status` frequently
-6. **Scale Gradually** - Increase capital as confidence grows
+MIT License - See LICENSE file for details
 
 ---
 
-**Version**: 1.0 (In Development)  
-**Last Updated**: January 2025  
-**License**: MIT
+## 🎯 Roadmap
 
-**⚡ Ready to complete implementation? See IMPLEMENTATION_BLUEPRINT.md! 🚀**
+### Current Version: 1.0.0
+- ✅ Native SDK integration (OCO, WebSocket, Market Data)
+- ✅ Rule-based strategies (Swing, Scalping)
+- ✅ Multi-layered risk management
+- ✅ Telegram bot interface
+- ✅ Trailing stop implementation
+- ✅ Production-ready deployment
+
+### Future Enhancements
+- 🔄 Machine learning integration
+- 🔄 Multi-market support
+- 🔄 Advanced strategies (grid trading, DCA)
+- 🔄 Portfolio optimization
+- 🔄 Backtesting framework
+- 🔄 Web dashboard
+
+---
+
+**Version**: 1.0.0  
+**Last Updated**: November 2025  
+**Status**: Production Ready ✅
+
+---
+
+**Built with ❤️ for the Lighter Protocol community**

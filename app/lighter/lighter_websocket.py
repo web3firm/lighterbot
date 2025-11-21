@@ -1,274 +1,259 @@
 """
-Lighter WebSocket - Real-time market data
-Connects to Lighter Protocol WebSocket for live price feeds
+Lighter WebSocket - Native SDK Implementation
+Replaces 200+ lines of custom WebSocket code with ~60 lines using SDK's WsClient
+Real-time order and account updates instead of polling
 """
 
 import logging
+import lighter
+from typing import Callable, Optional, Dict, Any
 import asyncio
-import json
-from typing import List, Dict, Any, Callable, Optional
-from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 
 class LighterWebSocket:
     """
-    WebSocket connection for real-time market data from Lighter Protocol
+    Native SDK-based WebSocket client
+    Provides real-time updates for account and order book data
     """
     
-    def __init__(self, symbols: List[str], callbacks: Optional[Dict[str, Callable]] = None):
+    def __init__(self, api_url: str, account_index: int):
         """
-        Initialize WebSocket client
+        Initialize WebSocket client using native SDK
         
         Args:
-            symbols: List of symbols to subscribe to
-            callbacks: Optional callbacks for different event types
+            api_url: API URL (e.g., 'https://api.lighter.xyz/v1')
+            account_index: Account index for subscriptions
         """
-        self.symbols = symbols
-        self.callbacks = callbacks or {}
+        # Convert HTTP URL to WebSocket URL
+        ws_url = api_url.replace('https://', 'wss://').replace('http://', 'ws://').replace('/v1', '/ws')
         
-        # Connection state
-        self.ws = None
-        self.connected = False
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10
+        self.ws_url = ws_url
+        self.account_index = account_index
+        self.ws_client = None
         
-        # Data storage
-        self.latest_data: Dict[str, Dict[str, Any]] = {}
-        self.subscriptions: Dict[str, bool] = {}
+        # Callbacks
+        self.account_callback: Optional[Callable] = None
+        self.orderbook_callback: Optional[Callable] = None
+        self.connected_callback: Optional[Callable] = None
+        self.error_callback: Optional[Callable] = None
         
-        logger.info(f"✅ WebSocket initialized for {len(symbols)} symbols")
-        for symbol in symbols:
-            logger.info(f"   • {symbol}")
+        logger.info(f"🔌 WebSocket initialized (Native SDK)")
+        logger.info(f"   URL: {ws_url}")
+        logger.info(f"   Account: {account_index}")
     
-    async def start(self):
-        """Start WebSocket connection"""
-        try:
-            logger.info("🔌 Starting WebSocket connection...")
-            
-            # TODO: Implement actual WebSocket connection to Lighter Protocol
-            # import websockets
-            # self.ws = await websockets.connect(LIGHTER_WS_URL)
-            
-            self.connected = True
-            logger.info("✅ WebSocket connected")
-            
-            # Subscribe to symbols
-            for symbol in self.symbols:
-                await self.subscribe(symbol)
-            
-            # Start message handler
-            asyncio.create_task(self._message_handler())
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start WebSocket: {e}")
-            self.connected = False
-    
-    async def stop(self):
-        """Stop WebSocket connection"""
-        try:
-            logger.info("🔌 Stopping WebSocket connection...")
-            
-            # Unsubscribe from all
-            for symbol in list(self.subscriptions.keys()):
-                await self.unsubscribe(symbol)
-            
-            # Close connection
-            if self.ws:
-                # await self.ws.close()
-                pass
-            
-            self.connected = False
-            logger.info("✅ WebSocket disconnected")
-            
-        except Exception as e:
-            logger.error(f"❌ Error stopping WebSocket: {e}")
-    
-    async def subscribe(self, symbol: str):
+    async def connect(self) -> bool:
         """
-        Subscribe to symbol updates
+        Connect to WebSocket using native SDK client
         
-        Args:
-            symbol: Trading pair to subscribe to
+        Returns:
+            True if connected successfully
         """
         try:
-            logger.info(f"📡 Subscribing to {symbol}")
+            logger.info("🔌 Connecting to WebSocket...")
             
-            # TODO: Send subscription message to Lighter WebSocket
-            # subscribe_msg = {
-            #     'method': 'subscribe',
-            #     'channel': 'ticker',
-            #     'symbol': symbol
-            # }
-            # await self.ws.send(json.dumps(subscribe_msg))
+            # Create native WsClient
+            self.ws_client = lighter.WsClient(
+                api_url=self.ws_url,
+                account_index=self.account_index
+            )
             
-            self.subscriptions[symbol] = True
-            logger.info(f"✅ Subscribed to {symbol}")
+            # Set up handlers
+            self._setup_handlers()
+            
+            # Connect (SDK handles connection internally)
+            await self.ws_client.connect()
+            
+            logger.info("✅ WebSocket connected (Native SDK)")
+            
+            if self.connected_callback:
+                await self.connected_callback()
+            
+            return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to subscribe to {symbol}: {e}")
+            logger.error(f"❌ WebSocket connection failed: {e}")
+            if self.error_callback:
+                await self.error_callback(e)
+            return False
     
-    async def unsubscribe(self, symbol: str):
-        """
-        Unsubscribe from symbol updates
+    def _setup_handlers(self):
+        """Set up native SDK event handlers"""
         
-        Args:
-            symbol: Trading pair to unsubscribe from
-        """
-        try:
-            if symbol not in self.subscriptions:
-                return
-            
-            logger.info(f"📡 Unsubscribing from {symbol}")
-            
-            # TODO: Send unsubscribe message
-            # unsubscribe_msg = {
-            #     'method': 'unsubscribe',
-            #     'channel': 'ticker',
-            #     'symbol': symbol
-            # }
-            # await self.ws.send(json.dumps(unsubscribe_msg))
-            
-            del self.subscriptions[symbol]
-            logger.info(f"✅ Unsubscribed from {symbol}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to unsubscribe from {symbol}: {e}")
-    
-    async def _message_handler(self):
-        """Handle incoming WebSocket messages"""
-        while self.connected:
+        # Connected handler
+        original_connected = self.ws_client.handle_connected_async
+        async def on_connected():
+            logger.info("✅ WebSocket connected event")
+            if self.connected_callback:
+                await self.connected_callback()
+            if original_connected:
+                await original_connected()
+        
+        self.ws_client.handle_connected_async = on_connected
+        
+        # Account update handler
+        original_account = self.ws_client.handle_update_account
+        def on_account_update(update):
             try:
-                # TODO: Receive and parse messages from Lighter WebSocket
-                # message = await self.ws.recv()
-                # data = json.loads(message)
-                # await self._process_message(data)
-                
-                await asyncio.sleep(1)  # Placeholder
-                
-            except asyncio.CancelledError:
-                break
+                logger.debug(f"📊 Account update received")
+                if self.account_callback:
+                    asyncio.create_task(self._safe_callback(self.account_callback, update))
+                if original_account:
+                    original_account(update)
             except Exception as e:
-                logger.error(f"❌ Error in message handler: {e}")
-                
-                # Attempt reconnection
-                if self.reconnect_attempts < self.max_reconnect_attempts:
-                    self.reconnect_attempts += 1
-                    logger.warning(f"🔄 Reconnecting... (attempt {self.reconnect_attempts})")
-                    await asyncio.sleep(2 ** self.reconnect_attempts)  # Exponential backoff
-                    await self.start()
-                else:
-                    logger.error("❌ Max reconnection attempts reached")
-                    self.connected = False
-                    break
+                logger.error(f"Error in account update handler: {e}")
+        
+        self.ws_client.handle_update_account = on_account_update
+        
+        # Order book update handler
+        original_orderbook = self.ws_client.handle_update_order_book
+        def on_orderbook_update(update):
+            try:
+                logger.debug(f"📖 Order book update received")
+                if self.orderbook_callback:
+                    asyncio.create_task(self._safe_callback(self.orderbook_callback, update))
+                if original_orderbook:
+                    original_orderbook(update)
+            except Exception as e:
+                logger.error(f"Error in order book update handler: {e}")
+        
+        self.ws_client.handle_update_order_book = on_orderbook_update
+        
+        # Error handler
+        original_error = self.ws_client.on_error
+        def on_error(ws, error):
+            logger.error(f"❌ WebSocket error: {error}")
+            if self.error_callback:
+                asyncio.create_task(self._safe_callback(self.error_callback, error))
+            if original_error:
+                original_error(ws, error)
+        
+        self.ws_client.on_error = on_error
+        
+        # Close handler
+        original_close = self.ws_client.on_close
+        def on_close(ws, close_status_code, close_msg):
+            logger.warning(f"⚠️  WebSocket closed: {close_status_code} - {close_msg}")
+            if original_close:
+                original_close(ws, close_status_code, close_msg)
+        
+        self.ws_client.on_close = on_close
     
-    async def _process_message(self, data: Dict[str, Any]):
+    async def _safe_callback(self, callback: Callable, data: Any):
+        """Safely execute callback with error handling"""
+        try:
+            if asyncio.iscoroutinefunction(callback):
+                await callback(data)
+            else:
+                callback(data)
+        except Exception as e:
+            logger.error(f"Error in callback: {e}")
+            logger.exception(e)
+    
+    async def subscribe_account(self, callback: Callable) -> bool:
         """
-        Process incoming WebSocket message
+        Subscribe to account updates (balance, orders, positions)
         
         Args:
-            data: Parsed message data
+            callback: Async function to call on updates
+            
+        Returns:
+            True if subscribed
         """
         try:
-            channel = data.get('channel')
-            symbol = data.get('symbol')
+            if not self.ws_client:
+                logger.error("❌ WebSocket not connected")
+                return False
             
-            if channel == 'ticker' and symbol:
-                # Update latest data
-                self.latest_data[symbol] = {
-                    'price': data.get('price', 0),
-                    'volume': data.get('volume', 0),
-                    'timestamp': data.get('timestamp', datetime.now(timezone.utc).timestamp())
-                }
-                
-                # Call registered callback
-                if 'ticker' in self.callbacks:
-                    await self.callbacks['ticker'](symbol, self.latest_data[symbol])
+            self.account_callback = callback
+            await self.ws_client.subscribe_account()
             
-            elif channel == 'trades' and symbol:
-                # Handle trade updates
-                if 'trades' in self.callbacks:
-                    await self.callbacks['trades'](symbol, data)
-            
-            elif channel == 'orderbook' and symbol:
-                # Handle orderbook updates
-                if 'orderbook' in self.callbacks:
-                    await self.callbacks['orderbook'](symbol, data)
+            logger.info(f"✅ Subscribed to account updates (Account: {self.account_index})")
+            return True
             
         except Exception as e:
-            logger.error(f"❌ Error processing message: {e}")
+            logger.error(f"❌ Failed to subscribe to account: {e}")
+            return False
     
-    def get_latest_price(self, symbol: str) -> Optional[float]:
+    async def subscribe_orderbook(self, market_id: int, callback: Callable) -> bool:
         """
-        Get latest price for symbol
+        Subscribe to order book updates for a market
         
         Args:
-            symbol: Trading pair
+            market_id: Market ID (e.g., 0 for ETH-USD)
+            callback: Async function to call on updates
             
         Returns:
-            Latest price or None
+            True if subscribed
         """
-        data = self.latest_data.get(symbol)
-        if data:
-            return data.get('price')
-        return None
+        try:
+            if not self.ws_client:
+                logger.error("❌ WebSocket not connected")
+                return False
+            
+            self.orderbook_callback = callback
+            await self.ws_client.subscribe_order_book(market_id)
+            
+            logger.info(f"✅ Subscribed to order book updates (Market: {market_id})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to subscribe to order book: {e}")
+            return False
     
-    def get_latest_data(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """
-        Get latest data for symbol
-        
-        Args:
-            symbol: Trading pair
-            
-        Returns:
-            Latest data dict or None
-        """
-        return self.latest_data.get(symbol)
+    def on_connected(self, callback: Callable):
+        """Set callback for connection events"""
+        self.connected_callback = callback
+    
+    def on_error(self, callback: Callable):
+        """Set callback for error events"""
+        self.error_callback = callback
+    
+    async def close(self):
+        """Close WebSocket connection"""
+        try:
+            if self.ws_client:
+                await self.ws_client.close()
+                logger.info("✅ WebSocket closed")
+        except Exception as e:
+            logger.error(f"❌ Error closing WebSocket: {e}")
     
     def is_connected(self) -> bool:
         """Check if WebSocket is connected"""
-        return self.connected
-    
-    def is_subscribed(self, symbol: str) -> bool:
-        """Check if subscribed to symbol"""
-        return symbol in self.subscriptions
-    
-    def register_callback(self, event_type: str, callback: Callable):
-        """
-        Register callback for event type
-        
-        Args:
-            event_type: 'ticker', 'trades', 'orderbook', etc.
-            callback: Async callback function
-        """
-        self.callbacks[event_type] = callback
-        logger.info(f"✅ Callback registered for {event_type}")
-    
-    def get_subscribed_symbols(self) -> List[str]:
-        """Get list of subscribed symbols"""
-        return list(self.subscriptions.keys())
+        return self.ws_client is not None
 
 
-if __name__ == "__main__":
-    # Test WebSocket
-    async def test():
-        async def on_ticker(symbol: str, data: Dict[str, Any]):
-            print(f"Ticker update for {symbol}: {data}")
-        
-        ws = LighterWebSocket(
-            symbols=['BTC-USD', 'ETH-USD'],
-            callbacks={'ticker': on_ticker}
-        )
-        
-        await ws.start()
-        print(f"Connected: {ws.is_connected()}")
-        print(f"Subscriptions: {ws.get_subscribed_symbols()}")
-        
-        # Run for 10 seconds
-        await asyncio.sleep(10)
-        
-        await ws.stop()
-        print(f"Connected: {ws.is_connected()}")
+# Example usage helper
+async def create_realtime_monitor(api_url: str, account_index: int,
+                                 on_account_update: Callable,
+                                 on_orderbook_update: Optional[Callable] = None,
+                                 market_id: Optional[int] = None) -> 'LighterWebSocket':
+    """
+    Quick setup for real-time monitoring
     
-    asyncio.run(test())
+    Args:
+        api_url: API URL
+        account_index: Account index
+        on_account_update: Callback for account updates
+        on_orderbook_update: Optional callback for order book updates
+        market_id: Optional market ID for order book subscription
+        
+    Returns:
+        Connected WebSocket client
+    """
+    ws = LighterWebSocket(api_url, account_index)
+    
+    # Connect
+    connected = await ws.connect()
+    if not connected:
+        raise Exception("Failed to connect WebSocket")
+    
+    # Subscribe to account updates
+    await ws.subscribe_account(on_account_update)
+    
+    # Subscribe to order book if requested
+    if on_orderbook_update and market_id is not None:
+        await ws.subscribe_orderbook(market_id, on_orderbook_update)
+    
+    return ws

@@ -21,9 +21,9 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # Component imports
 from app.lighter.lighter_client import LighterClient
-from app.lighter.lighter_order_manager_v2 import LighterOrderManagerV2
-from app.lighter.lighter_websocket_v2 import LighterWebSocketV2
-from app.lighter.market_data_v2 import MarketDataV2
+from app.lighter.lighter_order_manager import LighterOrderManager
+from app.lighter.lighter_websocket import LighterWebSocket
+from app.lighter.market_data import MarketData
 from app.lighter.trailing_stop_manager import TrailingStopManager
 from app.strategies.strategy_manager import StrategyManager
 from app.risk.risk_manager import RiskManager
@@ -49,9 +49,9 @@ class LighterBot:
         
         # Components
         self.lighter_client: Optional[LighterClient] = None
-        self.order_manager: Optional[LighterOrderManagerV2] = None
-        self.websocket: Optional[LighterWebSocketV2] = None
-        self.market_data: Optional[MarketDataV2] = None
+        self.order_manager: Optional[LighterOrderManager] = None
+        self.websocket: Optional[LighterWebSocket] = None
+        self.market_data: Optional[MarketData] = None
         self.trailing_manager: Optional[TrailingStopManager] = None
         self.strategy_manager: Optional[StrategyManager] = None
         self.risk_manager: Optional[RiskManager] = None
@@ -103,20 +103,20 @@ class LighterBot:
             )
             await self.lighter_client.connect()
             
-            # Initialize order manager (V2 - Native SDK)
-            self.order_manager = LighterOrderManagerV2(self.lighter_client)
-            logger.info("✅ Order Manager V2 initialized (Native SDK OCO)")
+            # Initialize order manager (Native SDK)
+            self.order_manager = LighterOrderManager(self.lighter_client)
+            logger.info("✅ Order Manager initialized (Native SDK OCO)")
             
-            # Initialize WebSocket (V2 - Native SDK)
-            self.websocket = LighterWebSocketV2(
+            # Initialize WebSocket (Native SDK)
+            self.websocket = LighterWebSocket(
                 api_url=os.getenv('LIGHTER_API_URL', 'https://mainnet.zklighter.elliot.ai'),
                 account_index=int(os.getenv('LIGHTER_ACCOUNT_INDEX', '0'))
             )
-            logger.info("✅ WebSocket V2 initialized (Native SDK)")
+            logger.info("✅ WebSocket initialized (Native SDK)")
             
-            # Initialize market data (V2 - Native SDK)
-            self.market_data = MarketDataV2(self.lighter_client.api_client)
-            logger.info("✅ Market Data V2 initialized (Native SDK)")
+            # Initialize market data (Native SDK)
+            self.market_data = MarketData(self.lighter_client.api_client)
+            logger.info("✅ Market Data initialized (Native SDK)")
             
             # Initialize trailing stop manager
             self.trailing_manager = TrailingStopManager(

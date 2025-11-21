@@ -1,5 +1,5 @@
 """
-Market Data Module V2 - Native SDK Implementation
+Market Data Module - Native SDK Implementation
 Uses CandlestickApi and OrderApi instead of manual REST calls
 Replaces 100+ lines with ~80 lines of efficient SDK calls
 """
@@ -13,7 +13,7 @@ import time
 logger = logging.getLogger(__name__)
 
 
-class MarketDataV2:
+class MarketData:
     """
     Native SDK-based market data provider
     Efficient data retrieval using SDK's built-in methods
@@ -34,7 +34,7 @@ class MarketDataV2:
         self.cache = {}
         self.cache_ttl = 5  # seconds
         
-        logger.info("✅ Market Data V2 initialized (Native SDK)")
+        logger.info("✅ Market Data initialized (Native SDK)")
     
     async def get_market_snapshot(self, market_id: int) -> Dict[str, Any]:
         """
