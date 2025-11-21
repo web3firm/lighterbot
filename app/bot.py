@@ -67,6 +67,7 @@ class LighterBot:
         self.last_ml_check = datetime.now(timezone.utc)
         self.account_state: Dict[str, Any] = {}
         self.current_position: Optional[Dict[str, Any]] = None
+        self.position_lock = asyncio.Lock()  # Prevent race condition when opening positions
         self.last_position_close_time: Optional[datetime] = None
         self.position_cooldown_seconds = int(os.getenv('POSITION_COOLDOWN_SECONDS', '300'))  # Default 5 minutes cooldown
         self.min_position_duration = 60  # Minimum 60 seconds before position can close (prevent instant close bug)
@@ -392,8 +393,15 @@ class LighterBot:
     
     async def _execute_entry(self, signal: Dict[str, Any]):
         """Execute entry order with V2 native OCO and optional trailing stops"""
-        try:
-            symbol = signal['symbol']
+        # Acquire lock to prevent race condition
+        async with self.position_lock:
+            # Double-check no position exists after acquiring lock
+            if self.current_position:
+                logger.warning("⚠️  Position already exists (race condition prevented)")
+                return
+            
+            try:
+                symbol = signal['symbol']
             side = signal['side']
             entry_price = Decimal(str(signal['entry_price']))
             size = Decimal(str(signal['size']))
@@ -487,9 +495,9 @@ class LighterBot:
                     await self.db_manager.insert_trade(trade_data)
                 
                 logger.info(f"✅ Position opened successfully with TRUE OCO")
-            
-        except Exception as e:
-            logger.error(f"❌ Error executing entry: {e}")
+                
+            except Exception as e:
+                logger.error(f"❌ Error executing entry: {e}")
     
     async def _monitor_position(self):
         """Monitor open position and update trailing stops with live prices"""
