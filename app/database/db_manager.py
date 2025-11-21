@@ -93,7 +93,7 @@ class DatabaseManager:
                     trade_data['entry_price'],
                     trade_data['size'],
                     trade_data['leverage'],
-                    datetime.fromisoformat(trade_data['entry_time']).replace(tzinfo=timezone.utc),
+                    datetime.fromisoformat(trade_data['entry_time'].replace('Z', '+00:00')),
                     trade_data.get('indicators'),
                     trade_data.get('ml_prediction'),
                     trade_data.get('ml_confidence')
@@ -122,7 +122,7 @@ class DatabaseManager:
                     WHERE trade_id = $8
                 """,
                     exit_data['exit_price'],
-                    datetime.fromisoformat(exit_data['exit_time']).replace(tzinfo=timezone.utc),
+                    datetime.fromisoformat(exit_data['exit_time'].replace('Z', '+00:00')),
                     exit_data['pnl_usd'],
                     exit_data['pnl_pct'],
                     exit_data.get('fees_usd', 0),
