@@ -89,12 +89,12 @@ class AutoTrainer:
                 logger.error(f"❌ Failed to load existing model: {e}")
                 self.model_trained = False
     
-    async def check_and_train(self) -> bool:
+    async def check_and_train(self) -> Optional[Dict[str, Any]]:
         """
         Check if training is needed and train if threshold reached
         
         Returns:
-            True if training completed, False otherwise
+            Dict with training results if completed, None otherwise
         """
         # Count total trades
         total_trades = self._count_trades()
@@ -117,9 +117,14 @@ class AutoTrainer:
         
         if should_train:
             success = await self.train_model()
-            return success
+            if success and self.metrics:
+                return {
+                    'trade_count': total_trades,
+                    'accuracy': self.metrics.get('accuracy', 0.0),
+                    'phase': 'V2 (Active)' if self.model_trained else 'V1 (Collection)'
+                }
         
-        return False
+        return None
     
     def _count_trades(self) -> int:
         """Count completed trades in database (trades with exit_time)"""

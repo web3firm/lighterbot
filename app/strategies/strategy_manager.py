@@ -53,15 +53,25 @@ class StrategyManager:
     def _initialize_strategies(self):
         """Initialize all active strategies"""
         try:
-            # Import active strategies
-            from app.strategies.rule_based.swing_trader import SwingTradingStrategy
-            from app.strategies.rule_based.scalping_2pct import ScalpingStrategy2Pct
+            import os
             
-            # Initialize strategies based on allocation
-            self.strategies.append(SwingTradingStrategy(self.symbol, self.config))
-            self.strategies.append(ScalpingStrategy2Pct(self.symbol, self.config))
+            # Get allocations from environment
+            swing_alloc = float(os.getenv('SWING_ALLOCATION', '70'))
+            scalp_alloc = float(os.getenv('SCALPING_ALLOCATION', '30'))
             
-            logger.info(f"✅ Initialized {len(self.strategies)} strategies")
+            # Only initialize strategies with non-zero allocation
+            if swing_alloc > 0:
+                from app.strategies.rule_based.swing_trader import SwingTradingStrategy
+                self.strategies.append(SwingTradingStrategy(self.symbol, self.config))
+                logger.info(f"✅ Initialized Swing Trading Strategy ({swing_alloc}% allocation)")
+            
+            if scalp_alloc > 0:
+                from app.strategies.rule_based.scalping_2pct import ScalpingStrategy2Pct
+                self.strategies.append(ScalpingStrategy2Pct(self.symbol, self.config))
+                logger.info(f"✅ Initialized Scalping Strategy ({scalp_alloc}% allocation)")
+            
+            if not self.strategies:
+                logger.error("❌ No strategies enabled! Check SWING_ALLOCATION and SCALPING_ALLOCATION")
             
         except Exception as e:
             logger.error(f"❌ Failed to initialize strategies: {e}")

@@ -320,6 +320,6 @@ async def get_current_price(api_client, market_id: int = 0) -> float:
     Returns:
         Current price
     """
-    market_data = MarketDataV2(api_client)
+    market_data = MarketData(api_client)
     snapshot = await market_data.get_market_snapshot(market_id)
     return snapshot.get('last_price', 0)

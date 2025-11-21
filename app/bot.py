@@ -321,11 +321,15 @@ class LighterBot:
         """Check if ML training should run (V1→V2 transition)"""
         try:
             if self.auto_trainer:
-                result = self.auto_trainer.check_and_train()
+                result = await self.auto_trainer.check_and_train()
                 
                 if result:
                     logger.info(f"🎓 ML Training completed: {result}")
-                    self.trading_logger.log_ml_training(result)
+                    self.trading_logger.log_ml_training(
+                        trade_count=result['trade_count'],
+                        accuracy=result['accuracy'],
+                        phase=result['phase']
+                    )
             
             self.last_ml_check = datetime.now(timezone.utc)
             
@@ -457,9 +461,10 @@ class LighterBot:
                     # Enable trailing stop if configured
                     trailing_enabled = os.getenv('TRAILING_SL_ENABLED', 'false').lower() == 'true'
                     if trailing_enabled and sl_order:
-                        trail_percent = Decimal(os.getenv('TRAILING_SL_TRAIL_PCT', '2.0'))
-                        callback_distance = Decimal(os.getenv('TRAILING_SL_CALLBACK_PCT', '0.5'))
-                        activation_profit = Decimal(os.getenv('TRAILING_SL_ACTIVATION_PCT', '1.0'))
+                        activation_profit = Decimal(os.getenv('TRAILING_SL_ACTIVATION', '7.0'))
+                        trail_level = Decimal(os.getenv('TRAILING_SL_LEVEL', '3.0'))
+                        trail_percent = activation_profit - trail_level  # e.g., 7% - 3% = 4% trail distance
+                        callback_distance = Decimal('0.5')  # 0.5% minimum move before updating
                         
                         position_size_base = int(size * Decimal('10000000'))  # Convert to base units
                         
@@ -475,7 +480,21 @@ class LighterBot:
                             callback_distance=callback_distance,
                             activation_profit=activation_profit
                         )
-                        logger.info(f"🔄 Trailing stop enabled: {trail_percent}% trail, activate at +{activation_profit}% profit")
+                        logger.info(f"🔄 Trailing SL enabled: activate at +{activation_profit}% PnL, trail to +{trail_level}% (distance: {trail_percent}%)")
+                    
+                    # Enable trailing take profit if configured
+                    tp_trailing_enabled = os.getenv('TRAILING_TP_ENABLED', 'false').lower() == 'true'
+                    if tp_trailing_enabled and tp_order:
+                        tp_activation = Decimal(os.getenv('TRAILING_TP_ACTIVATION', '10.0'))
+                        tp_level = Decimal(os.getenv('TRAILING_TP_LEVEL', '12.0'))
+                        logger.info(f"🎯 Trailing TP configured: activate at +{tp_activation}% PnL, lock at +{tp_level}% PnL")
+                        # Store TP trailing config in position
+                        self.current_position['tp_trailing'] = {
+                            'enabled': True,
+                            'activation': float(tp_activation),
+                            'level': float(tp_level),
+                            'activated': False
+                        }
                     
                     # Save trade entry to database
                     if self.db_manager:
@@ -513,15 +532,6 @@ class LighterBot:
             current_price = Decimal(str(market_data['mark_price']))
             position_id = self.current_position.get('position_id')
             
-            # Update trailing stop manager with current price
-            trailing_enabled = os.getenv('TRAILING_SL_ENABLED', 'false').lower() == 'true'
-            if trailing_enabled and position_id:
-                new_sl = await self.trailing_manager.update_price(position_id, current_price)
-                
-                if new_sl:
-                    logger.info(f"🔄 Trailing SL updated to ${new_sl}")
-                    self.current_position['sl_price'] = float(new_sl)
-            
             # Calculate and log current PnL
             entry_price = Decimal(str(self.current_position.get('entry_price', 0)))
             side = self.current_position.get('side', 'buy')
@@ -538,6 +548,20 @@ class LighterBot:
             
             pnl_pct = price_change_pct * Decimal(str(leverage))
             
+            # Update trailing stop manager with current price
+            trailing_enabled = os.getenv('TRAILING_SL_ENABLED', 'false').lower() == 'true'
+            if trailing_enabled and position_id:
+                new_sl = await self.trailing_manager.update_price(position_id, current_price)
+                
+                if new_sl:
+                    logger.info(f"🔄 Trailing SL updated to ${new_sl}")
+                    self.current_position['sl_price'] = float(new_sl)
+            
+            # Update trailing take profit if configured
+            tp_trailing_config = self.current_position.get('tp_trailing')
+            if tp_trailing_config and tp_trailing_config.get('enabled'):
+                await self._update_trailing_tp(current_price, pnl_pct, tp_trailing_config)
+            
             # Check if position was closed (check both symbol match and non-zero size)
             positions = await self.lighter_client.get_positions()
             position_exists = any(
@@ -552,6 +576,62 @@ class LighterBot:
             
         except Exception as e:
             logger.error(f"❌ Error monitoring position: {e}")
+    
+    async def _update_trailing_tp(self, current_price: Decimal, pnl_pct: Decimal, tp_config: dict):
+        """
+        Update trailing take profit - closes position when profit reaches target level
+        
+        Logic:
+        1. Wait until PnL reaches activation threshold (e.g., +10%)
+        2. Once activated, if PnL drops below target level (e.g., +12%), close position
+        3. This locks in profit when price starts to reverse after hitting target
+        """
+        try:
+            activation = Decimal(str(tp_config['activation']))
+            level = Decimal(str(tp_config['level']))
+            activated = tp_config.get('activated', False)
+            
+            # Activate trailing TP when profit reaches activation threshold
+            if not activated and pnl_pct >= activation:
+                tp_config['activated'] = True
+                tp_config['peak_pnl'] = float(pnl_pct)
+                logger.info(f"🎯 Trailing TP activated at +{pnl_pct:.2f}% PnL (activation: +{activation}%)")
+                return
+            
+            # If activated, track peak PnL
+            if activated:
+                peak_pnl = Decimal(str(tp_config.get('peak_pnl', activation)))
+                
+                # Update peak if current PnL is higher
+                if pnl_pct > peak_pnl:
+                    tp_config['peak_pnl'] = float(pnl_pct)
+                    logger.info(f"📈 Trailing TP: New peak +{pnl_pct:.2f}% PnL")
+                    return
+                
+                # Close position if PnL drops below target level
+                if pnl_pct < level:
+                    logger.info(f"🎯 Trailing TP triggered: PnL dropped to +{pnl_pct:.2f}% (target: +{level}%, peak: +{peak_pnl:.2f}%)")
+                    logger.info(f"💰 Closing position to lock in profit...")
+                    
+                    # Close position via market order
+                    symbol = self.current_position['symbol']
+                    side = self.current_position['side']
+                    size = Decimal(str(self.current_position['size']))
+                    
+                    # Reverse side for close
+                    close_side = 'sell' if side == 'buy' else 'buy'
+                    
+                    # Place market order to close
+                    await self.order_manager.place_market_order(
+                        symbol=symbol,
+                        side=close_side,
+                        size=size
+                    )
+                    
+                    logger.info(f"✅ Trailing TP: Position closed at +{pnl_pct:.2f}% PnL")
+                    
+        except Exception as e:
+            logger.error(f"❌ Error updating trailing TP: {e}")
     
     async def _on_position_closed(self):
         """Handle position closed event and disable trailing stops"""
@@ -624,7 +704,7 @@ class LighterBot:
                     'exit_time': datetime.now(timezone.utc).isoformat(),
                     'pnl_usd': float(actual_pnl),
                     'pnl_pct': float(pnl_pct),
-                    'fees_usd': 0.0,  # TODO: Calculate actual fees
+                    'fees_usd': 0.0,  # Fees not available from exchange API
                     'duration_seconds': int((datetime.now(timezone.utc) - datetime.fromisoformat(self.current_position.get('entry_time'))).total_seconds()) if self.current_position.get('entry_time') else 0,
                     'exit_reason': 'OCO filled'
                 }

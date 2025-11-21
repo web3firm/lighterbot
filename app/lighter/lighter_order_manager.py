@@ -332,6 +332,56 @@ class LighterOrderManager:
             logger.error(f"❌ Failed to cancel all orders: {e}")
             return False
     
+    async def place_market_order(self, symbol: str, side: str, size: Decimal) -> Optional[str]:
+        """
+        Place market order using native SDK
+        Used for closing positions (e.g., trailing TP)
+        
+        Args:
+            symbol: Trading pair (e.g., 'ETH-USD')
+            side: 'buy' or 'sell'
+            size: Position size in base asset
+            
+        Returns:
+            Transaction hash of the order
+        """
+        try:
+            logger.info(f"📦 Placing market order: {side.upper()} {size} {symbol}")
+            
+            # Convert to SDK units
+            base_amount = int(float(size) * 1e4)
+            is_ask = (side.lower() == 'sell')
+            
+            # Create market order request
+            order_req = lighter.signer_client.CreateOrderTxReq()
+            order_req.MarketIndex = self.market_id
+            order_req.ClientOrderIndex = 0  # SDK auto-generates
+            order_req.BaseAmount = base_amount
+            order_req.Price = 0  # Market orders don't need price
+            order_req.IsAsk = 1 if is_ask else 0
+            order_req.Type = lighter.SignerClient.ORDER_TYPE_MARKET
+            order_req.TimeInForce = lighter.SignerClient.ORDER_TIME_IN_FORCE_IMMEDIATE_OR_CANCEL
+            order_req.ReduceOnly = 1  # Reduce-only to close position
+            order_req.TriggerPrice = 0
+            order_req.OrderExpiry = 0  # Market orders expire immediately
+            
+            # Place order
+            tx, tx_hash, err = await self.client.signer_client.create_order(
+                order=order_req
+            )
+            
+            if err:
+                logger.error(f"❌ Failed to place market order: {err}")
+                return None
+            
+            logger.info(f"✅ Market order placed: TX {tx_hash}")
+            return str(tx_hash)
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to place market order: {e}")
+            logger.exception(e)
+            return None
+    
     async def update_leverage(self, leverage: int, margin_mode: str = 'cross') -> bool:
         """
         Update leverage using native SDK
@@ -404,5 +454,5 @@ async def create_oco_order(client, symbol: str, side: str, size: Decimal,
     Returns:
         Transaction hash
     """
-    manager = LighterOrderManagerV2(client)
+    manager = LighterOrderManager(client)
     return await manager.place_oco_order_native(symbol, side, size, entry_price, sl_price, tp_price)
