@@ -62,11 +62,12 @@ class LighterClient:
             self.api_client = lighter.ApiClient(configuration=config)
             
             # Initialize SignerClient for trading operations
+            # Initialize SignerClient for trading operations
+            # SDK v2+ requires api_private_keys dict {index: key}
             self.signer_client = lighter.SignerClient(
                 url=self.api_url,
-                private_key=self.api_private_key,
-                api_key_index=self.api_key_index,
-                account_index=self.account_index
+                account_index=self.account_index,
+                api_private_keys={self.api_key_index: self.api_private_key}
             )
             
             # Verify API key is valid

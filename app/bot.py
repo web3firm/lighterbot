@@ -103,11 +103,20 @@ class LighterBot:
                 api_key_index=int(os.getenv('LIGHTER_API_KEY_INDEX', '0')),
                 account_index=int(os.getenv('LIGHTER_ACCOUNT_INDEX', '0'))
             )
-            await self.lighter_client.connect()
+            if not await self.lighter_client.connect():
+                logger.error("❌ Failed to connect to Lighter Protocol. Check your .env credentials!")
+                return False
             
             # Initialize order manager (Native SDK)
             self.order_manager = LighterOrderManager(self.lighter_client)
             logger.info("✅ Order Manager initialized (Native SDK OCO)")
+            
+            # Explicitly set leverage on startup (Crucial for aggressive strategy)
+            # This ensures the exchange account is actually set to the desired leverage
+            max_leverage = int(os.getenv('MAX_LEVERAGE', '5'))
+            if max_leverage > 0:
+                logger.info(f"⚙️  Setting account leverage to {max_leverage}x...")
+                await self.order_manager.update_leverage(max_leverage, margin_mode='cross')
             
             # Initialize WebSocket (Native SDK)
             self.websocket = LighterWebSocket(

@@ -70,6 +70,12 @@ class StrategyManager:
                 self.strategies.append(ScalpingStrategy2Pct(self.symbol, self.config))
                 logger.info(f"✅ Initialized Scalping Strategy ({scalp_alloc}% allocation)")
             
+            aggressive_alloc = float(os.getenv('AGGRESSIVE_ALLOCATION', '0'))
+            if aggressive_alloc > 0:
+                from app.strategies.rule_based.aggressive_scalper import AggressiveScalperStrategy
+                self.strategies.append(AggressiveScalperStrategy(self.symbol, self.config))
+                logger.info(f"✅ Initialized Aggressive Scalping Strategy ({aggressive_alloc}% allocation)")
+            
             if not self.strategies:
                 logger.error("❌ No strategies enabled! Check SWING_ALLOCATION and SCALPING_ALLOCATION")
             
